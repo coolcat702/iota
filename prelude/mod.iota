@@ -1,0 +1,1675 @@
+module Prelude is
+
+# ============================================================
+
+# Primitive Types
+
+# ============================================================
+
+# Unit
+
+# Int
+
+# Float
+
+# Char
+
+# IO a  (a lazy action value: building one has no effect; only the program entry point runs it)
+
+# are assumed to exist.
+
+# ============================================================
+
+# Algebraic Types
+
+# ============================================================
+
+type List a = Nil + Cons (a * List a)
+end
+
+type String = List Char
+end
+
+type Maybe a = Val a + Nil
+end
+
+type Either a b = Left a + Right b
+end
+
+type Bool = False + True
+end
+
+# TODO actually do something with this
+type Nat = Zero + Succ Nat
+end
+
+# ============================================================
+
+# Type-specific compiler inserted functions
+
+# ============================================================
+
+let mod
+    : Int -> Int -> Int
+    = undefined
+end
+
+# ============================================================
+
+# Combinators
+
+# ============================================================
+
+let I a
+    : a -> a
+    = fn x -> x end
+end
+
+let id a
+    : a -> a
+    = I
+end
+
+let K a b
+    : a -> b -> a
+    = fn x ->
+        fn y -> x end
+    end
+end
+
+let const a b
+    : a -> b -> a
+    = K
+end
+
+let S a b c
+    : (a -> b -> c) -> (a -> b) -> a -> c
+    = fn f ->
+        fn g ->
+            fn x ->
+                f x (g x)
+            end
+        end
+    end
+end
+
+let ap a b c
+    : (a -> b -> c) -> (a -> b) -> a -> c
+    = S
+end
+
+let C a b c
+    : (a -> b -> c) -> b -> a -> c
+    = fn f ->
+        fn y ->
+            fn x ->
+                f x y
+            end
+        end
+    end
+end
+
+let flip a b c
+    : (a -> b -> c) -> b -> a -> c
+    = C
+end
+
+let Phi a b c d
+    : (b -> c -> d) -> (a -> b) -> (a -> c) -> a -> d
+    = fn f ->
+        fn g ->
+            fn h ->
+                fn x ->
+                    f (g x) (h x)
+                end
+            end
+        end
+    end
+end
+
+let fork a b c d
+    : (b -> c -> d) -> (a -> b) -> (a -> c) -> a -> d
+    = Phi
+end
+
+let D2 a b c d e
+    : (b -> c -> d) -> (a -> b) -> (e -> c) -> a -> e -> d
+    = fn f ->
+        fn g ->
+            fn h ->
+                fn x ->
+                    fn y ->
+                        f (g x) (h y)
+                    end
+                end
+            end
+        end
+    end
+end
+
+let fork2 a b c d e
+    : (b -> c -> d) -> (a -> b) -> (e -> c) -> a -> e -> d
+    = D2
+end
+
+let Psi a b c
+    : (b -> b -> c) -> (a -> b) -> a -> a -> c
+    = fn f ->
+        fn g ->
+            fn x ->
+                fn y ->
+                    f (g x) (g y)
+                end
+            end
+        end
+    end
+end
+
+let over a b c
+    : (b -> b -> c) -> (a -> b) -> a -> a -> c
+    = Psi
+end
+
+let B a b c
+    : (b -> c) -> (a -> b) -> a -> c
+    = fn f ->
+        fn g ->
+            fn x ->
+                f (g x)
+            end
+        end
+    end
+end
+
+let comp a b c
+    : (b -> c) -> (a -> b) -> a -> c
+    = B
+end
+
+let B1 a b c d
+    : (c -> d) -> (a -> b -> c) -> a -> b -> d
+    = fn f ->
+        fn g ->
+            fn x ->
+                fn y ->
+                    f (g x y)
+                end
+            end
+        end
+    end
+end
+
+let comp2 a b c d
+    : (c -> d) -> (a -> b -> c) -> a -> b -> d
+    = B1
+end
+
+let B2 a b c d e
+    : (d -> e) -> (a -> b -> c -> d) -> a -> b -> c -> e
+    = fn f ->
+        fn g ->
+            fn x ->
+                fn y ->
+                    fn z ->
+                        f (g x y z)
+                    end
+                end
+            end
+        end
+    end
+end
+
+let comp3 a b c d e
+    : (d -> e) -> (a -> b -> c -> d) -> a -> b -> c -> e
+    = B2
+end
+
+let T a b
+    : a -> (a -> b) -> b
+    = fn x ->
+        fn f ->
+            f x
+        end
+    end
+end
+
+let thrust a b
+    : a -> (a -> b) -> b
+    = T
+end
+
+let W a b
+    : (a -> a -> b) -> a -> b
+    = fn f ->
+        fn x ->
+            f x x
+        end
+    end
+end
+
+let join a b
+    : (a -> a -> b) -> a -> b
+    = W
+end
+
+# ============================================================
+
+# Product Helpers
+
+# ============================================================
+
+let pair a b
+    : a -> b -> (a * b)
+    = fn a ->
+        fn b ->
+            a * b
+        end
+    end
+end
+
+let fst a b
+    : (a * b) -> a
+    = match
+        (x * y) -> x end
+    end
+end
+
+let rst a b
+    : (a * b) -> b
+    = match
+        (x * y) -> y end
+    end
+end
+
+# ============================================================
+
+# Boolean Helpers
+
+# ============================================================
+
+let not
+    : Bool -> Bool
+    = match
+        Bool:True  -> Bool:False end
+        Bool:False -> Bool:True  end
+    end
+end
+
+let and
+    : Bool -> Bool -> Bool
+    = match
+        Bool:True, Bool:True -> Bool:True  end
+        _, _                 -> Bool:False end
+    end
+end
+
+let or
+    : Bool -> Bool -> Bool
+    = match
+        Bool:False, Bool:False -> Bool:False end
+        _, _                   -> Bool:True  end
+    end
+end
+
+let cond a
+    : Bool -> a -> a -> a
+    = match
+        Bool:True -> const       end
+        Bool:False -> flip const end
+    end
+end
+
+# ============================================================
+
+# List Functions
+
+# ============================================================
+
+let map a b
+    : (a -> b) -> List a -> List b
+    = match
+        _, []                 -> []                         end
+        f, List:Cons (x * xs) -> List:Cons (f x * map f xs) end
+    end
+end
+
+let filter a
+    : (a -> Bool) -> List a -> List a
+    = match
+        _, [] -> [] end
+        p, List:Cons (x * xs) ->
+            cond (p x)
+                (List:Cons (x * filter p xs))
+                (filter p xs)
+        end
+    end
+end
+
+let foldl a b
+    : (b -> a -> b) -> b -> List a -> b
+    = match
+        _, c, [] -> c end
+        f, c, List:Cons (x * xs) ->
+            foldl f (f c x) xs
+        end
+    end
+end
+
+let foldr a b
+    : (a -> b -> b) -> b -> List a -> b
+    = match
+        f, z, [] -> z end
+	f, z, List:Cons (x * xs) -> f x (foldr f z xs) end
+    end
+end
+
+let scan a b
+    : (b -> a -> b) -> b -> List a -> List b
+    = match
+        _, c, [] -> [c] end
+        f, c, List:Cons (x * xs) ->
+            List:Cons
+                (c * scan f (f c x) xs)
+        end
+    end
+end
+
+let append a
+    : List a -> List a -> List a
+    = match
+        [], ys -> ys end
+        List:Cons (x * xs), ys ->
+            List:Cons (x * append xs ys)
+        end
+    end
+end
+
+let concat
+    : String -> String -> String
+    = append
+end
+
+let len a
+    : List a -> Int
+    = comp (foldl add 0) (map < const 1)
+end
+
+let reverse a
+    : List a -> List a
+    = foldl (flip (comp2 List:Cons pair)) []
+end
+
+let take a
+    : Int -> List a -> List a
+    = match
+        _, []           -> [] end
+        n, List:Cons (x * xs) ->
+            cond (lse n 0)
+                []
+                (List:Cons (x * take (sub n 1) xs))
+        end
+    end
+end
+
+let drop a
+    : Int -> List a -> List a
+    = match
+        _, []                 -> [] end
+        n, List:Cons (x * xs) ->
+            cond (lse n 0)
+                (List:Cons (x * xs))
+                (drop (sub n 1) xs)
+        end
+    end
+end
+
+let take_while a
+    : (a -> Bool) -> List a -> List a
+    = match
+        _, []           -> [] end
+        p, List:Cons (x * xs) ->
+            cond (p x)
+               (List:Cons (x * take_while p xs))
+               []
+        end
+    end
+end
+
+let zip a b
+    : List a -> List b -> List (a * b)
+    = match
+        [] , _ -> [] end
+        _, [] -> [] end
+        List:Cons (x * xs), List:Cons (y * ys) ->
+            List:Cons ((x * y) * zip xs ys)
+        end
+    end
+end
+
+let zip_with a b c
+    : (a -> b -> c) -> List a -> List b -> List c
+    = match
+        _, [], _ -> [] end
+        _, _, [] -> [] end
+        f, List:Cons (x * xs), List:Cons (y * ys) ->
+            List:Cons (f x y * zip_with f xs ys)
+        end
+    end
+end
+
+let head a
+    : List a -> Maybe a
+    = match
+        [] -> [] end
+        List:Cons (x * _) -> Maybe:Val x end
+    end
+end
+
+let tail a
+    : List a -> Maybe (List a)
+    = match
+        [] -> Maybe:Nil end
+        List:Cons (_ * xs) -> Maybe:Val xs end
+    end
+end
+
+let idx a
+    : List a -> Int -> Maybe a
+    = fn xs -> 
+        fn n ->
+            cond (ls n 0) Maybe:Nil (go xs n)
+        end
+    end
+with go a
+    : List a -> Int -> Maybe a
+    = match
+        [], _ -> Maybe:Nil end
+        List:Cons(x * _), 0 -> Maybe:Val x end
+        List:Cons(_ * xs), n -> go xs (sub n 1) end
+    end
+end
+
+let wrapping_idx a
+    : List a -> Int -> Maybe a
+    = fn xs -> 
+        fn n ->
+            idx xs (mod n (len xs))
+        end
+    end
+end
+
+let index_of (a : Eqable)
+    : List a -> a -> Maybe Int
+    = fn xs ->
+        fn x ->
+            index_of_from xs x 0
+        end
+    end
+end
+
+let index_of_from (a : Eqable)
+    : List a -> a -> Int -> Maybe Int
+    = match
+        [], _, _ -> Maybe:Nil end
+        List:Cons (y * ys), x, i ->
+            cond (eq y x)
+                (Maybe:Val i)
+                (index_of_from ys x (add i 1))
+        end
+    end
+end
+
+# ============================================================
+
+# Maybe / Either
+
+# ============================================================
+
+let maybe_map a b
+    : (a -> b) -> Maybe a -> Maybe b
+    = match
+        _, Maybe:Nil -> Maybe:Nil end
+        f, Maybe:Val x -> Maybe:Val (f x) end
+    end
+end
+
+let either_map a b c
+    : (b -> c) -> Either a b -> Either a c
+    = match
+        _, Either:Left x -> Either:Left x end
+        f, Either:Right x -> Either:Right (f x) end
+    end
+end
+
+let get_right a b
+    : Either a b -> Maybe b
+    = match
+        Either:Right x -> Maybe:Val x end
+        Either:Left _  -> Maybe:Nil end
+    end
+end
+
+let map_nil a b
+    : a -> Maybe b -> Either a b
+    = match
+        _, Maybe:Val x -> Either:Right x end
+        d, Maybe:Nil -> Either:Left d end
+    end
+end
+
+let map_nil_same a
+    : a -> Maybe a -> a
+    = match
+        _, Maybe:Val x -> x end
+        d, Maybe:Nil -> d end
+    end
+end
+
+# ============================================================
+
+# Range Functions
+
+# ============================================================
+
+let range (a : Successable, Orderable)
+    : a -> a -> List a
+    = comp to from
+end
+
+let range_inc (a : Successable, Orderable)
+    : a -> a -> List a
+    = comp to_inc from
+end
+
+let from (a : Successable)
+    : a -> List a
+    = comp List:Cons < ap pair < comp from succ
+end
+
+let to (a : Orderable)
+    : List a -> a -> List a
+    = flip < comp take_while gr
+end
+
+let to_inc (a : Orderable)
+    : List a -> a -> List a
+    = flip < comp take_while gre
+end
+
+# ============================================================
+
+# IO Functions
+
+# ============================================================
+
+let print
+    : String -> IO Unit
+    = undefined
+end
+
+let println
+    : String -> IO Unit
+    = undefined
+end
+
+let getln
+    : IO String
+    = undefined
+end
+
+# ============================================================
+
+# Type Classes
+
+# ============================================================
+
+class Addable a is
+    let add
+        : a -> a -> a
+    end
+end
+
+class Subable a is
+    let sub
+        : a -> a -> a
+    end
+end
+
+class Mulable a is
+    let mul
+        : a -> a -> a
+    end
+end
+
+class Divable a is
+    let div
+        : a -> a -> a
+    end
+end
+
+class Successable a is
+    let succ
+        : a -> a
+    end
+
+    let pred
+        : a -> a
+    end
+end
+
+class Orderable a is
+    let gr
+        : a -> a -> Bool
+    end
+
+    let gre
+        : a -> a -> Bool
+    end
+
+    let ls
+        : a -> a -> Bool
+    end
+
+    let lse
+        : a -> a -> Bool
+    end
+
+end
+
+class Eqable a is
+    let eq
+        : a -> a -> Bool
+    end
+
+    let neq
+        : a -> a -> Bool
+    end
+
+end
+
+class Showable a is
+    let show
+        : a -> String
+    end
+end
+
+class Parseable a is
+    let parse
+        : String -> Maybe a
+    end
+end
+
+class Functor f is
+    let fmap a b
+        : (a -> b) -> f a -> f b
+    end
+end
+
+class Monad m is
+    let return a
+        : a -> m a
+    end
+
+    let bind a b
+        : (a -> m b) -> m a -> m b
+    end
+end
+
+# `a > then b` runs `a`, then `b` (pipe order): `then b a`.
+let then (m : Monad) a b
+    : m b -> m a -> m b
+    = fork2 bind const id
+end
+
+class Default a is
+    let default
+        : a
+    end
+end
+
+# ============================================================
+
+# Default Instances
+
+# ============================================================
+
+instance Addable Int is
+    let add
+        : Int -> Int -> Int
+        = undefined
+    end
+end
+
+instance Subable Int is
+    let sub
+        : Int -> Int -> Int
+        = undefined
+    end
+end
+
+instance Mulable Int is
+    let mul
+        : Int -> Int -> Int
+        = undefined
+    end
+end
+
+instance Divable Int is
+    let div
+        : Int -> Int -> Int
+        = undefined
+    end
+end
+
+instance Eqable Int is
+    let eq
+        : Int -> Int -> Bool
+        = undefined
+    end
+
+    let neq
+        : Int -> Int -> Bool
+        = undefined
+    end
+
+end
+
+instance Orderable Int is
+    let gr
+        : Int -> Int -> Bool
+        = undefined
+    end
+
+    let gre
+        : Int -> Int -> Bool
+        = undefined
+    end
+
+    let ls
+        : Int -> Int -> Bool
+        = undefined
+    end
+
+    let lse
+        : Int -> Int -> Bool
+        = undefined
+    end
+
+end
+
+instance Successable Int is
+    let succ
+        : Int -> Int
+        = add 1
+    end
+
+    let pred
+        : Int -> Int
+        = flip sub 1
+    end
+end
+
+instance Showable Int is
+    let show
+        : Int -> String
+        = undefined
+    end
+end
+
+instance Showable Float is
+    let show
+        : Float -> String
+        = undefined
+    end
+end
+
+instance Showable String is
+    let show
+        : String -> String
+        = id
+    end
+end
+
+let parse_digit
+    : Char -> Maybe Int
+    = match
+        '0' -> Maybe:Val 0 end
+        '1' -> Maybe:Val 1 end
+        '2' -> Maybe:Val 2 end
+        '3' -> Maybe:Val 3 end
+        '4' -> Maybe:Val 4 end
+        '5' -> Maybe:Val 5 end
+        '6' -> Maybe:Val 6 end
+        '7' -> Maybe:Val 7 end
+        '8' -> Maybe:Val 8 end
+        '9' -> Maybe:Val 9 end
+        _   -> Maybe:Nil end
+    end
+end
+
+let parse_digits
+    : Int -> String -> Maybe Int
+    = match
+        acc, [] -> Maybe:Val acc end
+        acc, List:Cons (c * cs) ->
+            bind (fn d -> parse_digits (add (mul acc 10) d) cs end) (parse_digit c)
+        end
+    end
+end
+
+let parse_nat
+    : String -> Maybe Int
+    = match
+        [] -> Maybe:Nil end
+        s  -> parse_digits 0 s end
+    end
+end
+
+instance Parseable Int is
+    let parse
+        : String -> Maybe Int
+        = match
+            List:Cons ('-' * ds) -> fmap (sub 0) (parse_nat ds) end
+            List:Cons ('+' * ds) -> parse_nat ds end
+            s                    -> parse_nat s end
+        end
+    end
+end
+
+instance Functor List is
+    let fmap a b
+        : (a -> b) -> List a -> List b
+        = map
+    end
+end
+
+instance Functor Maybe is
+    let fmap a b
+        : (a -> b) -> Maybe a -> Maybe b
+        = maybe_map
+    end
+end
+
+instance Monad Maybe is
+    let return a
+        : a -> Maybe a
+        = Maybe:Val
+    end
+
+    let bind a b
+        : (a -> Maybe b) -> Maybe a -> Maybe b
+        = match
+            _, Maybe:Nil -> Maybe:Nil end
+            f, Maybe:Val x -> f x end
+        end
+    end
+end
+
+instance Monad IO is
+    let return a
+        : a -> IO a
+        = undefined
+    end
+
+    let bind a b
+        : (a -> IO b) -> IO a -> IO b
+        = undefined
+    end
+end
+
+instance Default Int is let default : Int = 0 end end
+
+instance Default Float is let default : Float = 0.0 end end
+
+instance Default Bool is let default : Bool = Bool:False end end
+
+instance Default String is let default : String = "" end end
+
+instance Default (List a) is let default : List a = [] end end
+
+instance Default (Maybe a) is let default : Maybe a = Maybe:Nil end end
+
+# ============================================================
+# Float and Char instances
+# ============================================================
+
+instance Addable Float is
+    let add
+        : Float -> Float -> Float
+        = undefined
+    end
+end
+
+instance Subable Float is
+    let sub
+        : Float -> Float -> Float
+        = undefined
+    end
+end
+
+instance Mulable Float is
+    let mul
+        : Float -> Float -> Float
+        = undefined
+    end
+end
+
+instance Divable Float is
+    let div
+        : Float -> Float -> Float
+        = undefined
+    end
+end
+
+instance Eqable Float is
+    let eq
+        : Float -> Float -> Bool
+        = undefined
+    end
+    let neq
+        : Float -> Float -> Bool
+        = undefined
+    end
+end
+
+instance Orderable Float is
+    let gr
+        : Float -> Float -> Bool
+        = undefined
+    end
+    let gre
+        : Float -> Float -> Bool
+        = undefined
+    end
+    let ls
+        : Float -> Float -> Bool
+        = undefined
+    end
+    let lse
+        : Float -> Float -> Bool
+        = undefined
+    end
+end
+
+instance Eqable Char is
+    let eq
+        : Char -> Char -> Bool
+        = undefined
+    end
+    let neq
+        : Char -> Char -> Bool
+        = undefined
+    end
+end
+
+instance Orderable Char is
+    let gr
+        : Char -> Char -> Bool
+        = undefined
+    end
+    let gre
+        : Char -> Char -> Bool
+        = undefined
+    end
+    let ls
+        : Char -> Char -> Bool
+        = undefined
+    end
+    let lse
+        : Char -> Char -> Bool
+        = undefined
+    end
+end
+
+instance Eqable Bool is
+    let eq
+        : Bool -> Bool -> Bool
+        = match
+            Bool:True, Bool:True -> Bool:True end
+            Bool:False, Bool:False -> Bool:True end
+            _, _ -> Bool:False end
+        end
+    end
+    let neq
+        : Bool -> Bool -> Bool
+        = match
+            Bool:True, Bool:True -> Bool:False end
+            Bool:False, Bool:False -> Bool:False end
+            _, _ -> Bool:True end
+        end
+    end
+end
+
+# ============================================================
+# More instances
+#
+# Every class gets an instance for each type a user would expect it for. Instances are
+# resolved by the head of the type, so `List a` also serves `String`, and a constraint on a
+# method (`(a : Eqable)`) is resolved at each concrete type the method is used at.
+# Not provided: `Default Unit` and `Parseable Unit` (the language has no unit literal),
+# and, because they need compiler primitives, `Successable Char` (no Char <-> Int
+# conversion).
+# ============================================================
+
+# ---- Nat helpers ----
+
+let nat_to_int
+    : Nat -> Int
+    = match
+        Nat:Zero   -> 0 end
+        Nat:Succ n -> add 1 (nat_to_int n) end
+    end
+end
+
+let int_to_nat
+    : Int -> Nat
+    = match
+        n -> cond (lse n 0) Nat:Zero (Nat:Succ (int_to_nat (sub n 1))) end
+    end
+end
+
+let float_digit
+    : Int -> Float
+    = match
+        n -> cond (lse n 0) 0.0 (add 1.0 (float_digit (sub n 1))) end
+    end
+end
+
+# ---- Addable / Subable / Mulable / Divable ----
+
+instance Addable (List a) is
+    let add a
+        : List a -> List a -> List a
+        = append
+    end
+end
+
+instance Addable Nat is
+    let add
+        : Nat -> Nat -> Nat
+        = match
+            Nat:Zero, m   -> m end
+            Nat:Succ n, m -> Nat:Succ (add n m) end
+        end
+    end
+end
+
+instance Subable Nat is
+    let sub
+        : Nat -> Nat -> Nat
+        = match
+            n, Nat:Zero                -> n end
+            Nat:Zero, _                -> Nat:Zero end
+            Nat:Succ n, Nat:Succ m     -> sub n m end
+        end
+    end
+end
+
+instance Mulable Nat is
+    let mul
+        : Nat -> Nat -> Nat
+        = match
+            Nat:Zero, _   -> Nat:Zero end
+            Nat:Succ n, m -> add m (mul n m) end
+        end
+    end
+end
+
+# ---- Successable ----
+
+instance Successable Float is
+    let succ
+        : Float -> Float
+        = add 1.0
+    end
+    let pred
+        : Float -> Float
+        = flip sub 1.0
+    end
+end
+
+instance Successable Nat is
+    let succ
+        : Nat -> Nat
+        = Nat:Succ
+    end
+    let pred
+        : Nat -> Nat
+        = match
+            Nat:Zero   -> Nat:Zero end
+            Nat:Succ n -> n end
+        end
+    end
+end
+
+instance Successable Bool is
+    let succ
+        : Bool -> Bool
+        = const Bool:True
+    end
+    let pred
+        : Bool -> Bool
+        = const Bool:False
+    end
+end
+
+# ---- Eqable ----
+
+instance Eqable Unit is
+    let eq
+        : Unit -> Unit -> Bool
+        = const (const Bool:True)
+    end
+    let neq
+        : Unit -> Unit -> Bool
+        = const (const Bool:False)
+    end
+end
+
+
+instance Eqable Nat is
+    let eq
+        : Nat -> Nat -> Bool
+        = match
+            Nat:Zero, Nat:Zero         -> Bool:True end
+            Nat:Succ n, Nat:Succ m     -> eq n m end
+            _, _                       -> Bool:False end
+        end
+    end
+    let neq
+        : Nat -> Nat -> Bool
+        = comp2 not eq
+    end
+end
+
+instance Eqable (Maybe a) is
+    let eq (a : Eqable)
+        : Maybe a -> Maybe a -> Bool
+        = match
+            Maybe:Nil, Maybe:Nil       -> Bool:True end
+            Maybe:Val x, Maybe:Val y   -> eq x y end
+            _, _                       -> Bool:False end
+        end
+    end
+    let neq (a : Eqable)
+        : Maybe a -> Maybe a -> Bool
+        = comp2 not eq
+    end
+end
+
+instance Eqable (List a) is
+    let eq (a : Eqable)
+        : List a -> List a -> Bool
+        = match
+            [], []                                 -> Bool:True end
+            List:Cons (x * xs), List:Cons (y * ys) -> and (eq x y) (eq xs ys) end
+            _, _                                   -> Bool:False end
+        end
+    end
+    let neq (a : Eqable)
+        : List a -> List a -> Bool
+        = comp2 not eq
+    end
+end
+
+instance Eqable (Either a b) is
+    let eq (a : Eqable) (b : Eqable)
+        : Either a b -> Either a b -> Bool
+        = match
+            Either:Left x, Either:Left y     -> eq x y end
+            Either:Right x, Either:Right y   -> eq x y end
+            _, _                             -> Bool:False end
+        end
+    end
+    let neq (a : Eqable) (b : Eqable)
+        : Either a b -> Either a b -> Bool
+        = comp2 not eq
+    end
+end
+
+instance Eqable (a * b) is
+    let eq (a : Eqable) (b : Eqable)
+        : (a * b) -> (a * b) -> Bool
+        = match
+            (x * y), (z * w) -> and (eq x z) (eq y w) end
+        end
+    end
+    let neq (a : Eqable) (b : Eqable)
+        : (a * b) -> (a * b) -> Bool
+        = comp2 not eq
+    end
+end
+
+instance Eqable (a + b) is
+    let eq (a : Eqable) (b : Eqable)
+        : (a + b) -> (a + b) -> Bool
+        = match
+            (x +), (y +) -> eq x y end
+            (+ x), (+ y) -> eq x y end
+            _, _         -> Bool:False end
+        end
+    end
+    let neq (a : Eqable) (b : Eqable)
+        : (a + b) -> (a + b) -> Bool
+        = comp2 not eq
+    end
+end
+
+# ---- Orderable (False < True, Nil < Val, shorter prefix first, Left < Right) ----
+
+instance Orderable Unit is
+    let gr
+        : Unit -> Unit -> Bool
+        = const (const Bool:False)
+    end
+    let gre
+        : Unit -> Unit -> Bool
+        = const (const Bool:True)
+    end
+    let ls
+        : Unit -> Unit -> Bool
+        = const (const Bool:False)
+    end
+    let lse
+        : Unit -> Unit -> Bool
+        = const (const Bool:True)
+    end
+end
+
+instance Orderable Bool is
+    let gr
+        : Bool -> Bool -> Bool
+        = match
+            Bool:True, Bool:False -> Bool:True end
+            _, _                  -> Bool:False end
+        end
+    end
+    let gre
+        : Bool -> Bool -> Bool
+        = match
+            Bool:False, Bool:True -> Bool:False end
+            _, _                  -> Bool:True end
+        end
+    end
+    let ls
+        : Bool -> Bool -> Bool
+        = match
+            Bool:False, Bool:True -> Bool:True end
+            _, _                  -> Bool:False end
+        end
+    end
+    let lse
+        : Bool -> Bool -> Bool
+        = match
+            Bool:True, Bool:False -> Bool:False end
+            _, _                  -> Bool:True end
+        end
+    end
+end
+
+instance Orderable Nat is
+    let gr
+        : Nat -> Nat -> Bool
+        = match
+            Nat:Succ _, Nat:Zero       -> Bool:True end
+            Nat:Succ n, Nat:Succ m     -> gr n m end
+            _, _                       -> Bool:False end
+        end
+    end
+    let gre
+        : Nat -> Nat -> Bool
+        = flip ls
+    end
+    let ls
+        : Nat -> Nat -> Bool
+        = flip gr
+    end
+    let lse
+        : Nat -> Nat -> Bool
+        = flip gre
+    end
+end
+
+instance Orderable (Maybe a) is
+    let gr (a : Orderable)
+        : Maybe a -> Maybe a -> Bool
+        = match
+            Maybe:Val x, Maybe:Val y   -> gr x y end
+            Maybe:Val _, Maybe:Nil     -> Bool:True end
+            _, _                       -> Bool:False end
+        end
+    end
+    let gre (a : Orderable)
+        : Maybe a -> Maybe a -> Bool
+        = match
+            Maybe:Val x, Maybe:Val y   -> gre x y end
+            Maybe:Nil, Maybe:Val _     -> Bool:False end
+            _, _                       -> Bool:True end
+        end
+    end
+    let ls (a : Orderable)
+        : Maybe a -> Maybe a -> Bool
+        = match
+            Maybe:Val x, Maybe:Val y   -> ls x y end
+            Maybe:Nil, Maybe:Val _     -> Bool:True end
+            _, _                       -> Bool:False end
+        end
+    end
+    let lse (a : Orderable)
+        : Maybe a -> Maybe a -> Bool
+        = match
+            Maybe:Val x, Maybe:Val y   -> lse x y end
+            Maybe:Val _, Maybe:Nil     -> Bool:False end
+            _, _                       -> Bool:True end
+        end
+    end
+end
+
+instance Orderable (List a) is
+    let gr (a : Orderable, Eqable)
+        : List a -> List a -> Bool
+        = match
+            List:Cons (x * xs), List:Cons (y * ys) ->
+                cond (eq x y) (gr xs ys) (gr x y)
+            end
+            List:Cons _, [] -> Bool:True end
+            _, _            -> Bool:False end
+        end
+    end
+    let gre (a : Orderable, Eqable)
+        : List a -> List a -> Bool
+        = match
+            List:Cons (x * xs), List:Cons (y * ys) ->
+                cond (eq x y) (gre xs ys) (gr x y)
+            end
+            [], List:Cons _ -> Bool:False end
+            _, _                  -> Bool:True end
+        end
+    end
+    let ls (a : Orderable, Eqable)
+        : List a -> List a -> Bool
+        = flip gr
+    end
+    let lse (a : Orderable, Eqable)
+        : List a -> List a -> Bool
+        = flip gre
+    end
+end
+
+instance Orderable (a * b) is
+    let gr (a : Orderable, Eqable) (b : Orderable)
+        : (a * b) -> (a * b) -> Bool
+        = match
+            (x * y), (z * w) -> cond (eq x z) (gr y w) (gr x z) end
+        end
+    end
+    let gre (a : Orderable, Eqable) (b : Orderable)
+        : (a * b) -> (a * b) -> Bool
+        = match
+            (x * y), (z * w) -> cond (eq x z) (gre y w) (gr x z) end
+        end
+    end
+    let ls (a : Orderable, Eqable) (b : Orderable)
+        : (a * b) -> (a * b) -> Bool
+        = flip gr
+    end
+    let lse (a : Orderable, Eqable) (b : Orderable)
+        : (a * b) -> (a * b) -> Bool
+        = flip gre
+    end
+end
+
+# ---- Showable ----
+
+instance Showable Char is
+    let show
+        : Char -> String
+        = comp (flip (comp2 List:Cons pair) []) I
+    end
+end
+
+instance Showable Unit is
+    let show
+        : Unit -> String
+        = const "()"
+    end
+end
+
+instance Showable Bool is
+    let show
+        : Bool -> String
+        = match
+            Bool:True  -> "True" end
+            Bool:False -> "False" end
+        end
+    end
+end
+
+instance Showable Nat is
+    let show
+        : Nat -> String
+        = comp show nat_to_int
+    end
+end
+
+# `[1, 2, 3]`; strings use the more specific `Showable String` instance
+let show_items (a : Showable)
+    : List a -> String
+    = match
+        []                 -> "" end
+        [x]                -> show x end
+        List:Cons (x * xs) -> concat (show x) (concat ", " (show_items xs)) end
+    end
+end
+
+instance Showable (List a) is
+    let show (a : Showable)
+        : List a -> String
+        = match
+            xs -> concat "[" (concat (show_items xs) "]") end
+        end
+    end
+end
+
+instance Showable (Maybe a) is
+    let show (a : Showable)
+        : Maybe a -> String
+        = match
+            Maybe:Nil   -> "Nil" end
+            Maybe:Val x -> concat "Val " (show x) end
+        end
+    end
+end
+
+instance Showable (Either a b) is
+    let show (a : Showable) (b : Showable)
+        : Either a b -> String
+        = match
+            Either:Left x  -> concat "Left " (show x) end
+            Either:Right x -> concat "Right " (show x) end
+        end
+    end
+end
+
+instance Showable (a * b) is
+    let show (a : Showable) (b : Showable)
+        : (a * b) -> String
+        = match
+            (x * y) -> concat "(" (concat (show x) (concat ", " (concat (show y) ")"))) end
+        end
+    end
+end
+
+instance Showable (a + b) is
+    let show (a : Showable) (b : Showable)
+        : (a + b) -> String
+        = match
+            (x +) -> concat "left " (show x) end
+            (+ y) -> concat "right " (show y) end
+        end
+    end
+end
+
+# ---- Parseable ----
+
+instance Parseable String is
+    let parse
+        : String -> Maybe String
+        = Maybe:Val
+    end
+end
+
+instance Parseable Nat is
+    let parse
+        : String -> Maybe Nat
+        = comp (maybe_map int_to_nat) (comp parse_nat I)
+    end
+end
+
+instance Parseable Char is
+    let parse
+        : String -> Maybe Char
+        = match
+            [c] -> Maybe:Val c end
+            _   -> Maybe:Nil end
+        end
+    end
+end
+
+instance Parseable Bool is
+    let parse
+        : String -> Maybe Bool
+        = match
+            s -> cond (eq s "True") (Maybe:Val Bool:True)
+                    (cond (eq s "False") (Maybe:Val Bool:False) Maybe:Nil) end
+        end
+    end
+end
+
+# Float: [+-] digits [. digits]
+let float_digit_of
+    : Char -> Maybe Float
+    = comp (maybe_map float_digit) parse_digit
+end
+
+let parse_float_frac
+    : Float -> Float -> String -> Maybe Float
+    = match
+        _, acc, [] -> Maybe:Val acc end
+        scale, acc, List:Cons (c * cs) ->
+            bind (fn d -> parse_float_frac (div scale 10.0) (add acc (mul scale d)) cs end)
+                 (float_digit_of c)
+        end
+    end
+end
+
+let parse_float_int
+    : Float -> String -> Maybe Float
+    = match
+        acc, [] -> Maybe:Val acc end
+        acc, List:Cons ('.' * cs) -> parse_float_frac 0.1 acc cs end
+        acc, List:Cons (c * cs) ->
+            bind (fn d -> parse_float_int (add (mul acc 10.0) d) cs end) (float_digit_of c)
+        end
+    end
+end
+
+let parse_float_unsigned
+    : String -> Maybe Float
+    = match
+        [] -> Maybe:Nil end
+        s  -> parse_float_int 0.0 s end
+    end
+end
+
+instance Parseable Float is
+    let parse
+        : String -> Maybe Float
+        = match
+            List:Cons ('-' * ds) -> maybe_map (sub 0.0) (parse_float_unsigned ds) end
+            List:Cons ('+' * ds) -> parse_float_unsigned ds end
+            s                    -> parse_float_unsigned s end
+        end
+    end
+end
+
+# ---- Functor / Monad ----
+
+instance Functor IO is
+    let fmap a b
+        : (a -> b) -> IO a -> IO b
+        = fn f -> bind (comp return f) end
+    end
+end
+
+instance Functor (Either e) is
+    let fmap a b
+        : (a -> b) -> Either e a -> Either e b
+        = either_map
+    end
+end
+
+instance Monad (Either e) is
+    let return a
+        : a -> Either e a
+        = Either:Right
+    end
+    let bind a b
+        : (a -> Either e b) -> Either e a -> Either e b
+        = match
+            _, Either:Left x  -> Either:Left x end
+            f, Either:Right x -> f x end
+        end
+    end
+end
+
+instance Monad List is
+    let return a
+        : a -> List a
+        = flip (comp2 List:Cons pair) []
+    end
+    let bind a b
+        : (a -> List b) -> List a -> List b
+        = match
+            _, []                 -> [] end
+            f, List:Cons (x * xs) -> append (f x) (bind f xs) end
+        end
+    end
+end
+
+# ---- Default ----
+
+instance Default Char is let default : Char = ' ' end end
+
+instance Default Nat is let default : Nat = Nat:Zero end end
+
+instance Default (a * b) is
+    let default (a : Default) (b : Default)
+        : (a * b)
+        = (default * default)
+    end
+end
+
+# ============================================================
+
+# Anonymous sums:  (a + b)
+
+# ============================================================
+
+let left a b
+    : a -> (a + b)
+    = undefined
+end
+
+let right a b
+    : b -> (a + b)
+    = undefined
+end
+
+let sum_case a b c
+    : (a -> c) -> (b -> c) -> (a + b) -> c
+    = match
+        f, _, (x +) -> f x end
+        _, g, (+ y) -> g y end
+    end
+end

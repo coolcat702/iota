@@ -1,0 +1,11 @@
+module Main is
+
+let nats
+    : Int -> List Int
+    = fn n -> List:Cons (n * nats (succ n)) end
+end
+
+let main
+    : IO Unit
+    = println (show (foldl add 0 (take_while (fn n -> lse n 10 end) (nats 0))))
+end

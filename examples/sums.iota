@@ -1,0 +1,14 @@
+module Main is
+
+let describe
+    : (Int + String) -> String
+    = match
+        (_ +) -> comp (concat "number ") show end
+        (+ _) -> concat "string " end
+    end
+end
+
+let main
+    : IO Unit
+    = println (describe (left 42)) > then (println (describe (right "hello")))
+end

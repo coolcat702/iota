@@ -1,0 +1,54 @@
+# lang.def — which prelude entities play which role in the compiler.
+#
+# [lang]        roles the compiler looks up by name
+# [intrinsics]  prelude bindings (written `= undefined` in the prelude) that the
+#               backend implements; the right-hand side names the primitive.
+
+[lang]
+entry      = Main:main
+io.type    = IO
+list.type  = List
+list.nil   = List:Nil
+list.cons  = List:Cons
+bool.false = Bool:False
+bool.true  = Bool:True
+sum.left   = Left
+sum.right  = Right
+
+[intrinsics]
+Int:add   = iadd
+Int:sub   = isub
+Int:mul   = imul
+Int:div   = idiv
+Prelude:mod = imod
+Int:eq    = ieq
+Int:neq   = ineq
+Int:gr    = igr
+Int:gre   = igre
+Int:ls    = ils
+Int:lse   = ilse
+Char:eq   = ieq
+Char:neq  = ineq
+Char:gr   = igr
+Char:gre  = igre
+Char:ls   = ils
+Char:lse  = ilse
+Float:add = fadd
+Float:sub = fsub
+Float:mul = fmul
+Float:div = fdiv
+Float:eq  = feq
+Float:neq = fneq
+Float:gr  = fgr
+Float:gre = fgre
+Float:ls  = fls
+Float:lse = flse
+Int:show   = show_int
+Float:show = show_float
+Prelude:print   = print
+Prelude:println = println
+Prelude:getln   = getln
+IO:return = io_return
+IO:bind   = io_bind
+Prelude:left     = sum_left
+Prelude:right    = sum_right

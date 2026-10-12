@@ -1,0 +1,230 @@
+module Main is
+
+# Conway's GOL with sparse grid
+#   (empty)   advance one generation           N        advance N generations
+#   t X Y     toggle the cell at X Y           g        load a glider
+#   p         load the R-pentomino             c        clear the world
+#   q         quit
+
+type Cell = Int * Int end
+type World = List Cell end
+
+let width
+    : Int
+    = 40
+end
+
+let height
+    : Int
+    = 16
+end
+
+let member
+    : Cell -> World -> Bool
+    = match
+        _, []                 -> Bool:False end
+        c, List:Cons (x * xs) -> or (eq c x) (member c xs) end
+    end
+end
+
+let nub
+    : World -> World
+    = match
+        []                 -> [] end
+        List:Cons (x * xs) -> cond (member x xs) (nub xs) (List:Cons (x * nub xs)) end
+    end
+end
+
+let neighbours
+    : Cell -> World
+    = match
+        (x * y) -> [
+            (sub x 1 * sub y 1), (x * sub y 1), (add x 1 * sub y 1),
+            (sub x 1 * y),                      (add x 1 * y),
+            (sub x 1 * add y 1), (x * add y 1), (add x 1 * add y 1)
+        ] end
+    end
+end
+
+let count
+    : World -> Cell -> Int
+    = match
+        w, c -> len (filter (fn n -> member n w end) (neighbours c)) end
+    end
+end
+
+let survives
+    : Bool -> Int -> Bool
+    = match
+        alive, n -> cond alive (or (eq n 2) (eq n 3)) (eq n 3) end
+    end
+end
+
+# Only live cells and their neighbours can be alive next generation.
+let step
+    : World -> World
+    = match
+        w -> filter (fn c -> survives (member c w) (count w c) end)
+                    (nub (append w (bind neighbours w))) end
+    end
+end
+
+let advance
+    : Int -> World -> World
+    = match
+        n, w -> cond (lse n 0) w (advance (sub n 1) (step w)) end
+    end
+end
+
+let toggle
+    : Cell -> World -> World
+    = match
+        c, w -> cond (member c w) (filter (fn d -> neq c d end) w) (List:Cons (c * w)) end
+    end
+end
+
+# ---- patterns ----
+
+let glider
+    : World
+    = [(1 * 0), (2 * 1), (0 * 2), (1 * 2), (2 * 2)]
+end
+
+let pentomino
+    : World
+    = [(21 * 7), (22 * 7), (20 * 8), (21 * 8), (21 * 9)]
+end
+
+# drawing
+
+let row
+    : World -> Int -> String
+    = match
+        w, y -> map (fn x -> cond (member (x * y) w) '#' '.' end) (range 0 width) end
+    end
+end
+
+let seq
+    : List (IO Unit) -> IO Unit
+    = match
+        []                   -> println "" end
+        List:Cons (a * [])   -> a end
+        List:Cons (a * rest) -> then (seq rest) a end
+    end
+end
+
+let draw
+    : Int -> World -> IO Unit
+    = match
+        g, w -> seq (append
+            [println (concat "Generation " (show g))]
+            (append (map (fn y -> println (row w y) end) (range 0 height))
+                    [println (concat "Live cells: " (show (len w)))])) end
+    end
+end
+
+# input
+
+let space
+    : Char -> Bool
+    = eq ' '
+end
+
+let not_space
+    : Char -> Bool
+    = comp not space
+end
+
+let drop_word
+    : String -> String
+    = match
+        []                 -> [] end
+        List:Cons (c * cs) -> cond (space c) (List:Cons (c * cs)) (drop_word cs) end
+    end
+end
+
+let words
+    : String -> List String
+    = match
+        []                   -> [] end
+        List:Cons (' ' * cs) -> words cs end
+        s -> List:Cons (take_while not_space s * words (drop_word s)) end
+    end
+end
+
+let to_int
+    : String -> Maybe Int
+    = parse
+end
+
+let same
+    : String -> String -> Bool
+    = eq
+end
+
+# ---- the interactive loop ----
+
+let prompt
+    : IO Unit
+    = print "[enter] step   N run   t X Y toggle   g glider   p pentomino   c clear   q quit > "
+end
+
+let help
+    : Int -> World -> IO Unit
+    = match
+        g, w -> println "?  try: [enter]  N  t X Y  g  p  c  q" > then (loop g w) end
+    end
+end
+
+let loop
+    : Int -> World -> IO Unit
+    = match
+        g, w -> draw g w > then prompt > then
+                (getln > bind (fn line -> command g w (words line) end))
+        end
+    end
+end
+
+let command
+    : Int -> World -> List String -> IO Unit
+    = match
+        g, w, []                              -> loop (add g 1) (step w) end
+        g, w, List:Cons (a * [])              -> single g w a end
+        g, w, List:Cons (t * List:Cons (x * List:Cons (y * []))) ->
+            cond (same t "t") (place g w (to_int x) (to_int y)) (help g w) end
+        g, w, _                               -> help g w end
+    end
+end
+
+let single
+    : Int -> World -> String -> IO Unit
+    = match
+        g, w, a ->
+            cond (same a "q") (println "Quitting")
+            (cond (same a "c") (loop 0 [])
+            (cond (same a "g") (loop 0 glider)
+            (cond (same a "p") (loop 0 pentomino)
+            (run g w (to_int a))))) end
+    end
+end
+
+let run
+    : Int -> World -> Maybe Int -> IO Unit
+    = match
+        g, w, Maybe:Val n -> loop (add g n) (advance n w) end
+        g, w, Maybe:Nil   -> help g w end
+    end
+end
+
+let place
+    : Int -> World -> Maybe Int -> Maybe Int -> IO Unit
+    = match
+        g, w, Maybe:Val x, Maybe:Val y -> loop g (toggle (x * y) w) end
+        g, w, _, _                     -> help g w end
+    end
+end
+
+let main
+    : IO Unit
+    = loop 0 glider
+end
