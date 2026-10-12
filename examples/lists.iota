@@ -1,0 +1,11 @@
+module Main is
+
+let sum
+    : List Int -> Int
+    = foldl add 0
+end
+
+let main
+    : IO Unit
+    = println (show (sum (map (mul 2) (range 1 101))))
+end

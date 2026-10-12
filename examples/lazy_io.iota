@@ -1,0 +1,11 @@
+module Main is
+
+let greet
+    : IO Unit
+    = println "hello"
+end
+
+let main
+    : IO Unit
+    = greet > then greet
+end

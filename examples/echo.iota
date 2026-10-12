@@ -1,0 +1,7 @@
+module Main is
+
+let main
+    : IO Unit
+    = println "Say something:" > then
+        (getln > bind (fn line -> println (concat "You said: " line) end))
+end
