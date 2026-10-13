@@ -292,66 +292,122 @@ pub fn fv_expr(e: &MExpr) -> BTreeSet<Name> {
 	}
 }
 
+fn dce_keep(v: &MValue, final_dialect: bool) -> bool {
+	final_dialect
+		&& matches!(
+			v,
+			MValue::Call { .. }
+				| MValue::Apply(..)
+				| MValue::Prim(..)
+				| MValue::Force(_)
+				| MValue::Fail(_)
+		)
+}
+
 // in core everything is lazy so any unused is dead. in final only operations that eval something must be kept.
 pub fn dce(e: MExpr, final_dialect: bool) -> MExpr {
-	fn keep(v: &MValue, final_dialect: bool) -> bool {
-		final_dialect
-			&& matches!(
-				v,
-				MValue::Call { .. }
-					| MValue::Apply(..)
-					| MValue::Prim(..)
-					| MValue::Force(_)
-					| MValue::Fail(_)
-			)
-	}
+	dce_fv(e, final_dialect).0
+}
+
+// returns the rewritten expression and its free variables (mirrors `fv_expr`)
+fn dce_fv(e: MExpr, fd: bool) -> (MExpr, BTreeSet<Name>) {
 	match e {
 		MExpr::Let(x, t, v, rest) => {
-			let rest = dce(*rest, final_dialect);
-			let v = match v {
-				MValue::Lambda { param, body, free } => MValue::Lambda {
-					param,
-					body: Box::new(dce(*body, final_dialect)),
-					free,
-				},
-				MValue::Delay { body, free } => MValue::Delay {
-					body: Box::new(dce(*body, final_dialect)),
-					free,
-				},
-				other => other,
+			let (rest, mut live) = dce_fv(*rest, fd);
+			let (v, v_fv) = match v {
+				MValue::Lambda { param, body, free } => {
+					let (b, mut s) = dce_fv(*body, fd);
+					s.remove(&param.0);
+					(
+						MValue::Lambda {
+							param,
+							body: Box::new(b),
+							free,
+						},
+						s,
+					)
+				}
+				MValue::Delay { body, free } => {
+					let (b, s) = dce_fv(*body, fd);
+					(
+						MValue::Delay {
+							body: Box::new(b),
+							free,
+						},
+						s,
+					)
+				}
+				other => {
+					let s = fv_value(&other);
+					(other, s)
+				}
 			};
-			if !keep(&v, final_dialect) && !fv_expr(&rest).contains(&x) {
-				rest
+			if !dce_keep(&v, fd) && !live.contains(&x) {
+				(rest, live)
 			} else {
-				MExpr::Let(x, t, v, Box::new(rest))
+				live.remove(&x);
+				live.extend(v_fv);
+				(MExpr::Let(x, t, v, Box::new(rest)), live)
 			}
 		}
-		MExpr::Case(a, arms) => MExpr::Case(
-			a,
-			arms.into_iter()
-				.map(|m| MArm {
-					pat: m.pat,
-					body: dce(m.body, final_dialect),
-				})
-				.collect(),
-		),
-		MExpr::Ret(a) => MExpr::Ret(a),
-		MExpr::Dup(n, r) => MExpr::Dup(n, Box::new(dce(*r, final_dialect))),
-		MExpr::Drop(n, r) => MExpr::Drop(n, Box::new(dce(*r, final_dialect))),
-		MExpr::DropReuse(t, x, r) => MExpr::DropReuse(t, x, Box::new(dce(*r, final_dialect))),
+		MExpr::Case(a, arms) => {
+			let mut live = BTreeSet::new();
+			fv_atom(&a, &mut live);
+			let mut out = Vec::with_capacity(arms.len());
+			for m in arms {
+				let (body, s) = dce_fv(m.body, fd);
+				live.extend(s);
+				out.push(MArm { pat: m.pat, body });
+			}
+			(MExpr::Case(a, out), live)
+		}
+		MExpr::Ret(a) => {
+			let mut s = BTreeSet::new();
+			fv_atom(&a, &mut s);
+			(MExpr::Ret(a), s)
+		}
+		MExpr::Dup(n, r) => {
+			let (r, mut s) = dce_fv(*r, fd);
+			s.insert(n.clone());
+			(MExpr::Dup(n, Box::new(r)), s)
+		}
+		MExpr::Drop(n, r) => {
+			let (r, mut s) = dce_fv(*r, fd);
+			s.insert(n.clone());
+			(MExpr::Drop(n, Box::new(r)), s)
+		}
+		MExpr::DropReuse(t, x, r) => {
+			let (r, mut s) = dce_fv(*r, fd);
+			s.remove(&t);
+			s.insert(x.clone());
+			(MExpr::DropReuse(t, x, Box::new(r)), s)
+		}
 		MExpr::Take {
 			binds,
 			from,
 			ctor,
 			token,
 			rest,
-		} => MExpr::Take {
-			binds,
-			from,
-			ctor,
-			token,
-			rest: Box::new(dce(*rest, final_dialect)),
-		},
+		} => {
+			let (rest, mut s) = dce_fv(*rest, fd);
+			for (n, _, _) in &binds {
+				s.remove(n);
+			}
+			if let Some(t) = &token {
+				s.remove(t);
+			}
+			s.insert(from.clone());
+			(
+				MExpr::Take {
+					binds,
+					from,
+					ctor,
+					token,
+					rest: Box::new(rest),
+				},
+				s,
+			)
+		}
 	}
 }
 
