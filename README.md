@@ -47,7 +47,7 @@ iota examples/factorial.iota -o fact --run     # compile, link, run
 iota prog.iota --emit ir                   # monomorphic typed ANF IR after optimization
 iota prog.iota --emit mir                  # instances, data layouts, strict/borrowed parameters
 iota prog.iota --emit llvm -o prog.ll      # textual LLVM IR
-iota prog.iota --opt-mode aggressive -v    # inlining + partial evaluation; narrate every stage
+iota prog.iota --opt-mode aggressive       # inlining + partial evaluation
 ```
 
 The prelude, the lang manifest (`prelude/lang.def`) and the C runtime are embedded in the compiler
