@@ -10,6 +10,9 @@ use crate::lang::{Intrinsic, Lang, LangItem};
 use crate::parser::Literal;
 use crate::typechecker::Ty;
 
+type SubstMap = im::HashMap<String, Atom>;
+type FactMap = im::HashMap<String, Fact>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OptimizeMode {
 	Off,
@@ -28,19 +31,14 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 		.iter()
 		.map(|e| (e.name.clone(), (e.arity, e.intrinsic)))
 		.collect();
-	let recursive: HashSet<String> = program
-		.functions
-		.iter()
-		.filter(|f| referenced_globals(&f.body).contains(&f.name))
-		.map(|f| f.name.clone())
-		.collect();
+	let recursive = recursive_set(program);
 	let mut funcs: HashMap<String, Rc<Function>> = program
 		.functions
 		.iter()
 		.map(|f| (f.name.clone(), Rc::new(f.clone())))
 		.collect();
 	let counter = Cell::new(0u64);
-	let budget = Cell::new(200_000usize);
+	let budget = Cell::new(0usize);
 	let sweeps = if mode == OptimizeMode::Aggressive {
 		2
 	} else {
@@ -70,6 +68,33 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 	for f in &mut program.functions {
 		*f = (*funcs[&f.name]).clone();
 	}
+}
+
+fn recursive_set(program: &IrProgram) -> HashSet<String> {
+	let calls: HashMap<&str, HashSet<String>> = program
+		.functions
+		.iter()
+		.map(|f| (f.name.as_str(), referenced_globals(&f.body)))
+		.collect();
+	let mut rec = HashSet::new();
+	for f in &program.functions {
+		// f is recursive iff it can reach itself through its callees
+		let mut seen: HashSet<&str> = HashSet::new();
+		let mut stack: Vec<&str> = calls[f.name.as_str()].iter().map(|s| s.as_str()).collect();
+		while let Some(n) = stack.pop() {
+			if n == f.name {
+				rec.insert(f.name.clone());
+				break;
+			}
+			if !seen.insert(n) {
+				continue;
+			}
+			if let Some(cs) = calls.get(n) {
+				stack.extend(cs.iter().map(|s| s.as_str()));
+			}
+		}
+	}
+	rec
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +128,7 @@ const CONCRETE_INLINE: usize = 400;
 const MAX_DEPTH: usize = 6;
 const MAX_FUNCTION_SIZE: usize = 5_000;
 const TAIL_INLINE_MAX: usize = 48;
+const FUNCTION_BUDGET: usize = 6_000;
 
 type Binds = Vec<(Name, Ty, Value)>;
 
@@ -128,14 +154,14 @@ fn rebuild(binds: Binds, tail: Expr) -> Expr {
 	e
 }
 
-fn resolve(subst: &HashMap<String, Atom>, a: &Atom) -> Atom {
+fn resolve(subst: &SubstMap, a: &Atom) -> Atom {
 	match a {
 		Atom::Var(n) => subst.get(n).cloned().unwrap_or_else(|| a.clone()),
 		_ => a.clone(),
 	}
 }
 
-fn fact_of_atom(a: &Atom, facts: &HashMap<String, Fact>) -> Option<Fact> {
+fn fact_of_atom(a: &Atom, facts: &FactMap) -> Option<Fact> {
 	match a {
 		Atom::Lit(l) => Some(Fact::Lit(l.clone())),
 		Atom::Var(n) => facts.get(n).cloned(),
@@ -143,7 +169,7 @@ fn fact_of_atom(a: &Atom, facts: &HashMap<String, Fact>) -> Option<Fact> {
 	}
 }
 
-fn record_fact(x: &str, v: &Value, facts: &mut HashMap<String, Fact>) {
+fn record_fact(x: &str, v: &Value, facts: &mut FactMap) {
 	match v {
 		Value::Ctor(tag, p) => {
 			facts.insert(x.to_string(), Fact::Ctor(tag.clone(), p.clone()));
@@ -352,6 +378,100 @@ fn fold_intrinsic(op: Intrinsic, args: &[Atom], lang: &Lang) -> Option<Folded> {
 	}
 }
 
+fn can_reduce(callee: &Function, args: &[Atom], facts: &FactMap) -> bool {
+	let mut unknown: HashSet<&str> = HashSet::new();
+	for ((p, _), a) in callee.params.iter().zip(args) {
+		if fact_of_atom(a, facts).is_none() {
+			unknown.insert(p.as_str());
+		}
+	}
+	if unknown.is_empty() {
+		return true;
+	}
+	let mut e = &callee.body;
+	loop {
+		match e {
+			Expr::Let(x, _, v, rest) => {
+				let derived = match v {
+					Value::Atom(Atom::Var(n))
+					| Value::Proj(Atom::Var(n), _)
+					| Value::Unwrap(Atom::Var(n)) => unknown.contains(n.as_str()),
+					_ => false,
+				};
+				if derived {
+					unknown.insert(x.as_str());
+				} else {
+					unknown.remove(x.as_str());
+				}
+				e = rest;
+			}
+			Expr::Case(Atom::Var(s), _) => return !unknown.contains(s.as_str()),
+			Expr::Case(Atom::Lit(_), _) => return true,
+			Expr::Case(..) => return false, // Global / Method scrutinee is never resolved
+			Expr::Halt(_) => return true,
+		}
+	}
+}
+
+fn cse_bucket(v: &Value) -> Option<String> {
+	fn atom(x: &Atom, k: &mut String) {
+		match x {
+			Atom::Var(n) | Atom::Global(n, _) | Atom::Method(n, _) => k.push_str(n),
+			Atom::Lit(_) => k.push('#'),
+		}
+		k.push('\u{1}');
+	}
+	let mut k = String::new();
+	match v {
+		Value::Atom(x) => {
+			k.push('a');
+			atom(x, &mut k);
+		}
+		Value::App(f, x) => {
+			k.push('p');
+			atom(f, &mut k);
+			atom(x, &mut k);
+		}
+		Value::Pair(x, y) => {
+			k.push('P');
+			atom(x, &mut k);
+			atom(y, &mut k);
+		}
+		Value::Ctor(t, p) => {
+			k.push('C');
+			k.push_str(t);
+			k.push('\u{1}');
+			if let Some(x) = p {
+				atom(x, &mut k);
+			}
+		}
+		Value::Proj(x, s) => {
+			k.push(if *s == Side::Fst { 'f' } else { 's' });
+			atom(x, &mut k);
+		}
+		Value::Unwrap(x) => {
+			k.push('u');
+			atom(x, &mut k);
+		}
+		Value::Str(s) => {
+			k.push('S');
+			k.push_str(s);
+		}
+		Value::Lambda(..) | Value::Fail(_) => return None,
+	}
+	Some(k)
+}
+
+fn returns_nullary_ctor(e: &Expr) -> Option<&str> {
+	match e {
+		Expr::Let(c, _, Value::Ctor(t, None), rest) => match &**rest {
+			Expr::Halt(Atom::Var(r)) if r == c => Some(t.as_str()),
+			_ => None,
+		},
+		_ => None,
+	}
+}
+
 impl<'a> Cx<'a> {
 	fn fresh(&self, base: &str) -> Name {
 		self.counter.set(self.counter.get() + 1);
@@ -360,13 +480,20 @@ impl<'a> Cx<'a> {
 	}
 
 	fn optimize_function(&self, f: &Function) -> Function {
+		self.budget.set(FUNCTION_BUDGET);
 		let mut body = f.body.clone();
-		let before = expr_size(&body);
+		let limit = MAX_FUNCTION_SIZE.max(expr_size(&body) * 4);
 		for _ in 0..24 {
 			self.changed.set(false);
-			body = self.simplify(body, &HashMap::new(), &HashMap::new(), 0, &f.name);
-			if expr_size(&body) > MAX_FUNCTION_SIZE.max(before * 4) {
-				return f.clone();
+			// only inlining can grow a function, so only keep a copy then
+			let prev = self.inline.then(|| body.clone());
+			body = self.simplify(body, &Default::default(), &Default::default(), 0, &f.name);
+			if expr_size(&body) > limit {
+				let safe = prev.unwrap_or_else(|| f.body.clone());
+				return Function {
+					body: safe,
+					..f.clone()
+				};
 			}
 			if !self.changed.get() {
 				break;
@@ -375,11 +502,49 @@ impl<'a> Cx<'a> {
 		Function { body, ..f.clone() }
 	}
 
+	// true if `case scrut of arms` returns EXACTLY the Bool it scrutinises
+	fn bool_identity(&self, scrut: &Atom, arms: &[Arm]) -> bool {
+		if !matches!(scrut, Atom::Var(_)) {
+			return false;
+		}
+		let t_name = self.lang.bool_ctor(true).to_string();
+		let f_name = self.lang.bool_ctor(false).to_string();
+		// what the first matching arm returns when the scrutinee is True / False
+		let mut when_true: Option<bool> = None;
+		let mut when_false: Option<bool> = None;
+		for arm in arms {
+			let Some(res) = returns_nullary_ctor(&arm.body) else {
+				return false;
+			};
+			let res_true = if res == t_name {
+				true
+			} else if res == f_name {
+				false
+			} else {
+				return false;
+			};
+			match &arm.pat {
+				CasePat::Ctor(t) if *t == t_name => {
+					when_true.get_or_insert(res_true);
+				}
+				CasePat::Ctor(t) if *t == f_name => {
+					when_false.get_or_insert(res_true);
+				}
+				CasePat::Wild => {
+					when_true.get_or_insert(res_true);
+					when_false.get_or_insert(res_true);
+				}
+				_ => return false,
+			}
+		}
+		when_true == Some(true) && when_false == Some(false)
+	}
+
 	fn subst_value(
 		&self,
 		v: Value,
-		subst: &HashMap<String, Atom>,
-		facts: &HashMap<String, Fact>,
+		subst: &SubstMap,
+		facts: &FactMap,
 		depth: usize,
 		owner: &str,
 	) -> Value {
@@ -402,8 +567,8 @@ impl<'a> Cx<'a> {
 	fn simplify(
 		&self,
 		e: Expr,
-		subst0: &HashMap<String, Atom>,
-		facts0: &HashMap<String, Fact>,
+		subst0: &SubstMap,
+		facts0: &FactMap,
 		depth: usize,
 		owner: &str,
 	) -> Expr {
@@ -411,10 +576,20 @@ impl<'a> Cx<'a> {
 		let mut subst = subst0.clone();
 		let mut facts = facts0.clone();
 		let mut out: Binds = Vec::new();
+		let mut cse: HashMap<String, Vec<usize>> = HashMap::new();
 
 		for (x, ty, v) in binds {
 			let v = self.subst_value(v, &subst, &facts, depth, owner);
-			self.step(x, ty, v, &mut subst, &mut facts, &mut out, depth, owner);
+			let first_new = out.len();
+			self.step(
+				x, ty, v, &mut subst, &mut facts, &mut out, &cse, depth, owner,
+			);
+			// index whatever `step` appended (a binding, or an inlined call's body)
+			for i in first_new..out.len() {
+				if let Some(k) = cse_bucket(&out[i].2) {
+					cse.entry(k).or_default().push(i);
+				}
+			}
 		}
 		let tail = self.simplify_tail(tail, &subst, &facts, depth, owner);
 
@@ -449,7 +624,7 @@ impl<'a> Cx<'a> {
 		&self,
 		kept: &mut Binds,
 		tail: &Expr,
-		facts: &HashMap<String, Fact>,
+		facts: &FactMap,
 		depth: usize,
 		owner: &str,
 	) -> Option<Expr> {
@@ -484,13 +659,13 @@ impl<'a> Cx<'a> {
 			return None;
 		}
 		self.budget.set(self.budget.get() - (size + 1));
-		let mut map: HashMap<String, Atom> = HashMap::new();
+		let mut map = SubstMap::new();
 		for ((p, _), a) in callee.params.iter().zip(args.iter()) {
 			map.insert(p.clone(), a.clone());
 		}
 		let copy = self.rename_expr(&callee.body, &mut map);
 		kept.pop();
-		Some(self.simplify(copy, &HashMap::new(), facts, depth + 1, owner))
+		Some(self.simplify(copy, &Default::default(), facts, depth + 1, owner))
 	}
 
 	fn float_in(&self, mut kept: Binds, tail: Expr) -> (Binds, Expr) {
@@ -499,29 +674,41 @@ impl<'a> Cx<'a> {
 		};
 		let mut scrut_vars = HashSet::new();
 		atom_vars(&scrut, &mut scrut_vars);
+		// free variables of each arm, kept current as bindings are moved in
+		let mut arm_vars: Vec<HashSet<String>> = arms.iter().map(|a| expr_vars(&a.body)).collect();
+		// variables used by the bindings after position i that stay in `kept`
+		let mut later: HashSet<String> = HashSet::new();
+
 		let mut i = kept.len();
 		while i > 0 {
 			i -= 1;
 			let x = kept[i].0.clone();
-			if scrut_vars.contains(&x)
-				|| kept[i + 1..]
+			let mut target = None;
+			if !scrut_vars.contains(&x) && !later.contains(&x) {
+				let mut using = arm_vars
 					.iter()
-					.any(|(_, _, v)| value_vars(v).contains(&x))
-			{
-				continue;
+					.enumerate()
+					.filter(|(_, s)| s.contains(&x))
+					.map(|(k, _)| k);
+				// move only if exactly one arm uses it
+				if let (Some(k), None) = (using.next(), using.next()) {
+					target = Some(k);
+				}
 			}
-			let using: Vec<usize> = arms
-				.iter()
-				.enumerate()
-				.filter(|(_, a)| expr_vars(&a.body).contains(&x))
-				.map(|(k, _)| k)
-				.collect();
-			if let [k] = using.as_slice() {
-				let (x, t, v) = kept.remove(i);
-				let body =
-					std::mem::replace(&mut arms[*k].body, Expr::Halt(Atom::Lit(Literal::Int(0))));
-				arms[*k].body = Expr::Let(x, t, v, Box::new(body));
-				self.changed.set(true);
+			match target {
+				Some(k) => {
+					let (x, t, v) = kept.remove(i);
+					let vv = value_vars(&v);
+					arm_vars[k].remove(&x);
+					arm_vars[k].extend(vv);
+					let body = std::mem::replace(
+						&mut arms[k].body,
+						Expr::Halt(Atom::Lit(Literal::Int(0))),
+					);
+					arms[k].body = Expr::Let(x, t, v, Box::new(body));
+					self.changed.set(true);
+				}
+				None => later.extend(value_vars(&kept[i].2)),
 			}
 		}
 		(kept, Expr::Case(scrut, arms))
@@ -533,9 +720,10 @@ impl<'a> Cx<'a> {
 		x: Name,
 		ty: Ty,
 		v: Value,
-		subst: &mut HashMap<String, Atom>,
-		facts: &mut HashMap<String, Fact>,
+		subst: &mut SubstMap,
+		facts: &mut FactMap,
 		out: &mut Binds,
+		cse: &HashMap<String, Vec<usize>>,
 		depth: usize,
 		owner: &str,
 	) {
@@ -585,10 +773,12 @@ impl<'a> Cx<'a> {
 		record_fact(&x, &v, facts);
 
 		if !matches!(v, Value::Lambda(..)) {
-			if let Some((y, _, _)) = out
-				.iter()
-				.find(|(_, t2, v2)| *t2 == ty && values_equal(v2, &v))
-			{
+			let hit = cse_bucket(&v).and_then(|k| cse.get(&k)).and_then(|idxs| {
+				idxs.iter()
+					.map(|&i| &out[i])
+					.find(|(_, t2, v2)| *t2 == ty && values_equal(v2, &v))
+			});
+			if let Some((y, _, _)) = hit {
 				if let Some(f) = facts.get(y).cloned() {
 					facts.insert(x.clone(), f);
 				}
@@ -607,8 +797,8 @@ impl<'a> Cx<'a> {
 		ty: &Ty,
 		f: &Atom,
 		a: &Atom,
-		subst: &mut HashMap<String, Atom>,
-		facts: &mut HashMap<String, Fact>,
+		subst: &mut SubstMap,
+		facts: &mut FactMap,
 		out: &mut Binds,
 		depth: usize,
 		owner: &str,
@@ -675,7 +865,7 @@ impl<'a> Cx<'a> {
 		false
 	}
 
-	fn is_concrete(a: &Atom, facts: &HashMap<String, Fact>) -> bool {
+	fn is_concrete(a: &Atom, facts: &FactMap) -> bool {
 		match a {
 			Atom::Lit(_) => true,
 			Atom::Var(n) => matches!(
@@ -694,7 +884,7 @@ impl<'a> Cx<'a> {
 		&self,
 		name: &str,
 		args: &[Atom],
-		facts: &HashMap<String, Fact>,
+		facts: &FactMap,
 		depth: usize,
 		owner: &str,
 	) -> Option<(Binds, Atom)> {
@@ -713,7 +903,7 @@ impl<'a> Cx<'a> {
 		let ok = !recursive
 			&& name != owner
 			&& (size <= SMALL_INLINE || (concrete && size <= CONCRETE_INLINE));
-		if !ok {
+		if !ok || !can_reduce(&callee, args, facts) {
 			return None;
 		}
 		if self.budget.get() < size + 1 {
@@ -721,12 +911,12 @@ impl<'a> Cx<'a> {
 		}
 		self.budget.set(self.budget.get() - (size + 1));
 
-		let mut map: HashMap<String, Atom> = HashMap::new();
+		let mut map = SubstMap::new();
 		for ((p, _), a) in callee.params.iter().zip(args.iter()) {
 			map.insert(p.clone(), a.clone());
 		}
 		let copy = self.rename_expr(&callee.body, &mut map);
-		let simp = self.simplify(copy, &HashMap::new(), facts, depth + 1, owner);
+		let simp = self.simplify(copy, &Default::default(), facts, depth + 1, owner);
 		let (binds, tail) = flatten(simp);
 		match tail {
 			Expr::Halt(a) => Some((binds, a)),
@@ -734,14 +924,14 @@ impl<'a> Cx<'a> {
 		}
 	}
 
-	fn rn_atom(&self, a: &Atom, map: &HashMap<String, Atom>) -> Atom {
+	fn rn_atom(&self, a: &Atom, map: &SubstMap) -> Atom {
 		match a {
 			Atom::Var(n) => map.get(n).cloned().unwrap_or_else(|| a.clone()),
 			other => other.clone(),
 		}
 	}
 
-	fn rename_value(&self, v: &Value, map: &HashMap<String, Atom>) -> Value {
+	fn rename_value(&self, v: &Value, map: &SubstMap) -> Value {
 		let r = |a: &Atom| self.rn_atom(a, map);
 		match v {
 			Value::Atom(a) => Value::Atom(r(a)),
@@ -762,7 +952,7 @@ impl<'a> Cx<'a> {
 		}
 	}
 
-	fn rename_expr(&self, e: &Expr, map: &mut HashMap<String, Atom>) -> Expr {
+	fn rename_expr(&self, e: &Expr, map: &mut SubstMap) -> Expr {
 		match e {
 			Expr::Let(x, t, v, rest) => {
 				let nv = self.rename_value(v, map);
@@ -787,8 +977,8 @@ impl<'a> Cx<'a> {
 	fn simplify_tail(
 		&self,
 		tail: Expr,
-		subst: &HashMap<String, Atom>,
-		facts: &HashMap<String, Fact>,
+		subst: &SubstMap,
+		facts: &FactMap,
 		depth: usize,
 		owner: &str,
 	) -> Expr {
@@ -811,7 +1001,7 @@ impl<'a> Cx<'a> {
 						return self.simplify(chosen, subst, facts, depth, owner);
 					}
 				}
-				let arms = arms
+				let arms: Vec<Arm> = arms
 					.into_iter()
 					.map(|arm| {
 						let mut f2 = facts.clone();
@@ -834,6 +1024,10 @@ impl<'a> Cx<'a> {
 						}
 					})
 					.collect();
+				if self.bool_identity(&scrut, &arms) {
+					self.changed.set(true);
+					return Expr::Halt(scrut);
+				}
 				Expr::Case(scrut, arms)
 			}
 			Expr::Let(..) => unreachable!("flatten never leaves a Let in tail position"),
