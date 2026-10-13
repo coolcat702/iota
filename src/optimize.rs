@@ -5,10 +5,17 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::diag::Diagnostic;
-use crate::ir::{display_ty, Arm, Atom, CasePat, Expr, Function, IrProgram, Name, Side, Value};
+use crate::ir::{
+	count_arrows, display_ty, peel_fn, Arm, Atom, CasePat, Expr, Function, IrProgram, Name, Side,
+	Value,
+};
 use crate::lang::{Intrinsic, Lang, LangItem};
 use crate::parser::Literal;
 use crate::typechecker::Ty;
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+static TRIED: AtomicUsize = AtomicUsize::new(0);
+static ACCEPTED: AtomicUsize = AtomicUsize::new(0);
+static WASTED: AtomicUsize = AtomicUsize::new(0);
 
 type SubstMap = im::HashMap<String, Atom>;
 type FactMap = im::HashMap<String, Fact>;
@@ -31,13 +38,17 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 		.iter()
 		.map(|e| (e.name.clone(), (e.arity, e.intrinsic)))
 		.collect();
+
+	let counter = Cell::new(0u64);
+	if mode == OptimizeMode::Aggressive {
+		raise_arity(program, &externs, &counter);
+	}
 	let recursive = recursive_set(program);
 	let mut funcs: HashMap<String, Rc<Function>> = program
 		.functions
 		.iter()
 		.map(|f| (f.name.clone(), Rc::new(f.clone())))
 		.collect();
-	let counter = Cell::new(0u64);
 	let budget = Cell::new(0usize);
 	let sweeps = if mode == OptimizeMode::Aggressive {
 		2
@@ -59,6 +70,7 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 					counter: &counter,
 					budget: &budget,
 					changed: Cell::new(false),
+					in_try: Cell::new(0),
 				};
 				cx.optimize_function(&current)
 			};
@@ -67,6 +79,16 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 	}
 	for f in &mut program.functions {
 		*f = (*funcs[&f.name]).clone();
+	}
+
+	if std::env::var_os("IOTA_OPT_STATS").is_some() {
+		eprintln!(
+			"[opt] inline attempts {}, accepted {}, wasted {}, fresh names {}",
+			TRIED.load(Relaxed),
+			ACCEPTED.load(Relaxed),
+			WASTED.load(Relaxed),
+			counter.get()
+		);
 	}
 }
 
@@ -121,6 +143,7 @@ struct Cx<'a> {
 	counter: &'a Cell<u64>,
 	budget: &'a Cell<usize>,
 	changed: Cell<bool>,
+	in_try: Cell<usize>,
 }
 
 const SMALL_INLINE: usize = 24;
@@ -548,7 +571,7 @@ impl<'a> Cx<'a> {
 		depth: usize,
 		owner: &str,
 	) -> Value {
-		let r = |a: &Atom| resolve(subst, a);
+		let r = |a: &Atom| self.fold_global(resolve(subst, a));
 		match v {
 			Value::Atom(a) => Value::Atom(r(&a)),
 			Value::App(f, a) => Value::App(r(&f), r(&a)),
@@ -577,17 +600,21 @@ impl<'a> Cx<'a> {
 		let mut facts = facts0.clone();
 		let mut out: Binds = Vec::new();
 		let mut cse: HashMap<String, Vec<usize>> = HashMap::new();
+		let mut lams: HashMap<String, usize> = HashMap::new();
 
 		for (x, ty, v) in binds {
 			let v = self.subst_value(v, &subst, &facts, depth, owner);
 			let first_new = out.len();
 			self.step(
-				x, ty, v, &mut subst, &mut facts, &mut out, &cse, depth, owner,
+				x, ty, v, &mut subst, &mut facts, &mut out, &cse, &lams, depth, owner,
 			);
 			// index whatever `step` appended (a binding, or an inlined call's body)
 			for i in first_new..out.len() {
 				if let Some(k) = cse_bucket(&out[i].2) {
 					cse.entry(k).or_default().push(i);
+				}
+				if matches!(out[i].2, Value::Lambda(..)) {
+					lams.insert(out[i].0.clone(), i);
 				}
 			}
 		}
@@ -607,7 +634,7 @@ impl<'a> Cx<'a> {
 		kept.reverse();
 
 		let mut tail = tail;
-		if self.inline {
+		if self.inline && self.in_try.get() == 0 {
 			if let Some(inlined) = self.tail_inline(&mut kept, &tail, &facts, depth, owner) {
 				let (more, new_tail) = flatten(inlined);
 				kept.extend(more);
@@ -724,6 +751,7 @@ impl<'a> Cx<'a> {
 		facts: &mut FactMap,
 		out: &mut Binds,
 		cse: &HashMap<String, Vec<usize>>,
+		lams: &HashMap<String, usize>,
 		depth: usize,
 		owner: &str,
 	) {
@@ -763,7 +791,7 @@ impl<'a> Cx<'a> {
 				}
 			}
 			Value::App(f, a) => {
-				if self.step_app(&x, &ty, f, a, subst, facts, out, depth, owner) {
+				if self.step_app(&x, &ty, f, a, subst, facts, out, depth, owner, lams) {
 					return;
 				}
 			}
@@ -802,12 +830,13 @@ impl<'a> Cx<'a> {
 		out: &mut Binds,
 		depth: usize,
 		owner: &str,
+		lams: &HashMap<String, usize>,
 	) -> bool {
 		let (name, mut args): (String, Vec<Atom>) = match f {
 			Atom::Global(n, _) => (n.clone(), Vec::new()),
-			Atom::Var(v) => match facts.get(v) {
-				Some(Fact::Pap(n, args)) => (n.clone(), args.clone()),
-				_ => return false,
+			Atom::Var(v) => match facts.get(v).cloned() {
+				Some(Fact::Pap(n, args)) => (n, args),
+				_ => return self.beta(x, f, a, subst, facts, out, lams, depth, owner),
 			},
 			Atom::Lit(_) | Atom::Method(..) => return false,
 		};
@@ -910,17 +939,26 @@ impl<'a> Cx<'a> {
 			return None;
 		}
 		self.budget.set(self.budget.get() - (size + 1));
+		TRIED.fetch_add(1, Relaxed);
 
 		let mut map = SubstMap::new();
 		for ((p, _), a) in callee.params.iter().zip(args.iter()) {
 			map.insert(p.clone(), a.clone());
 		}
 		let copy = self.rename_expr(&callee.body, &mut map);
+		self.in_try.set(self.in_try.get() + 1);
 		let simp = self.simplify(copy, &Default::default(), facts, depth + 1, owner);
+		self.in_try.set(self.in_try.get() - 1);
 		let (binds, tail) = flatten(simp);
 		match tail {
-			Expr::Halt(a) => Some((binds, a)),
-			_ => None,
+			Expr::Halt(a) => {
+				ACCEPTED.fetch_add(1, Relaxed);
+				Some((binds, a))
+			}
+			_ => {
+				WASTED.fetch_add(1, Relaxed);
+				None
+			}
 		}
 	}
 
@@ -1033,6 +1071,73 @@ impl<'a> Cx<'a> {
 			Expr::Let(..) => unreachable!("flatten never leaves a Let in tail position"),
 		}
 	}
+
+	#[allow(clippy::too_many_arguments)]
+	fn beta(
+		&self,
+		x: &Name,
+		f: &Atom,
+		a: &Atom,
+		subst: &mut SubstMap,
+		facts: &mut FactMap,
+		out: &mut Binds,
+		lams: &HashMap<String, usize>,
+		depth: usize,
+		owner: &str,
+	) -> bool {
+		if !self.inline || depth >= MAX_DEPTH {
+			return false;
+		}
+		let Atom::Var(fv) = f else { return false };
+		let Some(&i) = lams.get(fv) else { return false };
+		let Value::Lambda(p, _, body) = &out[i].2 else {
+			return false;
+		};
+		let size = expr_size(body);
+		let concrete = Self::is_concrete(a, facts);
+		if !(size <= SMALL_INLINE || (concrete && size <= CONCRETE_INLINE))
+			|| self.budget.get() < size + 1
+		{
+			return false;
+		}
+		self.budget.set(self.budget.get() - (size + 1));
+
+		let mut map = SubstMap::new();
+		map.insert(p.clone(), a.clone());
+		let copy = self.rename_expr(body, &mut map);
+
+		self.in_try.set(self.in_try.get() + 1);
+		let simp = self.simplify(copy, &Default::default(), facts, depth + 1, owner);
+		self.in_try.set(self.in_try.get() - 1);
+
+		let (binds, tail) = flatten(simp);
+		let Expr::Halt(result) = tail else {
+			return false;
+		};
+		for (n, _, v) in &binds {
+			record_fact(n, v, facts);
+		}
+		if let Some(fact) = fact_of_atom(&result, facts) {
+			facts.insert(x.clone(), fact);
+		}
+		out.extend(binds);
+		subst.insert(x.clone(), result);
+		self.changed.set(true);
+		true
+	}
+
+	fn fold_global(&self, a: Atom) -> Atom {
+		if let Atom::Global(n, _) = &a {
+			if let Some(f) = self.funcs.get(n) {
+				if f.params.is_empty() {
+					if let Expr::Halt(Atom::Lit(l)) = &f.body {
+						return Atom::Lit(l.clone());
+					}
+				}
+			}
+		}
+		a
+	}
 }
 
 fn is_valid_entry_type(ty: &Ty, lang: &Lang) -> bool {
@@ -1105,4 +1210,153 @@ pub fn prune_unreachable(program: &mut IrProgram, entry: &str) {
 	}
 	program.functions.retain(|f| reachable.contains(&f.name));
 	program.externs.retain(|e| reachable.contains(&e.name));
+}
+
+// (global, args applied so far) if `a` is a global or a known partial application
+fn pap_of(a: &Atom, paps: &HashMap<String, (String, usize)>) -> Option<(String, usize)> {
+	match a {
+		Atom::Global(g, _) => Some((g.clone(), 0)),
+		Atom::Var(v) => paps.get(v).cloned(),
+		_ => None,
+	}
+}
+
+// Does evaluating `e` do nothing but allocate closures / partial applications,
+// build values, project, and test constructors?
+fn cheap_tail(
+	e: &Expr,
+	arity: &HashMap<String, usize>,
+	paps: &mut HashMap<String, (String, usize)>,
+) -> bool {
+	let mut cur = e;
+	loop {
+		match cur {
+			Expr::Halt(_) => return true,
+			Expr::Case(_, arms) => {
+				return arms
+					.iter()
+					.all(|arm| cheap_tail(&arm.body, arity, &mut paps.clone()));
+			}
+			Expr::Let(x, _, v, rest) => {
+				let ok = match v {
+					Value::Atom(a) => {
+						if let Some(p) = pap_of(a, paps) {
+							paps.insert(x.clone(), p);
+						}
+						true
+					}
+					// only a *partial* application is free; a saturated or
+					// unknown-function application is real work
+					Value::App(f, _) => match pap_of(f, paps) {
+						Some((g, n)) => match arity.get(&g) {
+							Some(&ar) if n + 1 < ar => {
+								paps.insert(x.clone(), (g, n + 1));
+								true
+							}
+							_ => false,
+						},
+						None => false,
+					},
+					Value::Lambda(..)
+					| Value::Pair(..)
+					| Value::Ctor(..)
+					| Value::Proj(..)
+					| Value::Unwrap(_)
+					| Value::Fail(_) => true,
+					// rebuilt on every call after expansion: not free
+					Value::Str(_) => false,
+				};
+				if !ok {
+					return false;
+				}
+				cur = &**rest;
+			}
+		}
+	}
+}
+
+// Apply the new parameters to the result of every tail position of `e`.
+// `fn_ty` is the function type of `e`'s result before expansion.
+fn apply_in_tails(e: Expr, args: &[(Name, Ty)], fn_ty: &Ty, fresh: &dyn Fn(&str) -> Name) -> Expr {
+	let (binds, tail) = flatten(e);
+	let tail = match tail {
+		Expr::Halt(a) => {
+			let mut apps: Binds = Vec::new();
+			let mut cur = a;
+			let mut cur_ty = fn_ty.clone();
+			for (name, _) in args {
+				let res_ty = match &cur_ty {
+					Ty::Fn(_, r) => (**r).clone(),
+					other => other.clone(),
+				};
+				let t = fresh("eta");
+				apps.push((
+					t.clone(),
+					res_ty.clone(),
+					Value::App(cur, Atom::Var(name.clone())),
+				));
+				cur = Atom::Var(t);
+				cur_ty = res_ty;
+			}
+			rebuild(apps, Expr::Halt(cur))
+		}
+		Expr::Case(s, arms) => Expr::Case(
+			s,
+			arms.into_iter()
+				.map(|arm| Arm {
+					pat: arm.pat,
+					body: apply_in_tails(arm.body, args, fn_ty, fresh),
+				})
+				.collect(),
+		),
+		Expr::Let(..) => unreachable!("flatten never leaves a Let in tail position"),
+	};
+	rebuild(binds, tail)
+}
+
+fn eta_expand(f: &mut Function, k: usize, counter: &Cell<u64>) {
+	let fresh = |base: &str| -> Name {
+		counter.set(counter.get() + 1);
+		format!("{}~{}", base, counter.get())
+	};
+	let (arg_tys, new_ret) = peel_fn(&f.ret, k);
+	let extra: Vec<(Name, Ty)> = arg_tys.into_iter().map(|t| (fresh("eta"), t)).collect();
+	let body = std::mem::replace(&mut f.body, Expr::Halt(Atom::Lit(Literal::Int(0))));
+	f.body = apply_in_tails(body, &extra, &f.ret, &fresh);
+	f.params.extend(extra);
+	f.ret = new_ret;
+	// `f.ty` (the full signature) is unchanged: same arrows, now all parameters
+}
+
+// Repeats until nothing changes, because raising one function (say an alias
+// like `const$56`) is what makes its callers' bodies recognisably cheap.
+// Each function is expanded at most once (afterwards its `ret` has no arrows),
+// so this terminates.
+fn raise_arity(
+	program: &mut IrProgram,
+	externs: &HashMap<String, (usize, Option<Intrinsic>)>,
+	counter: &Cell<u64>,
+) {
+	loop {
+		// stale within a round is fine: arities only grow, so a stale value
+		// can only make `cheap_tail` more conservative, never wrong
+		let arity: HashMap<String, usize> = program
+			.functions
+			.iter()
+			.map(|f| (f.name.clone(), f.params.len()))
+			.chain(externs.iter().map(|(n, (a, _))| (n.clone(), *a)))
+			.collect();
+		let mut changed = false;
+		for f in program.functions.iter_mut() {
+			let k = count_arrows(&f.ret);
+			if k == 0 || !cheap_tail(&f.body, &arity, &mut HashMap::new()) {
+				continue;
+			}
+			eta_expand(f, k, counter);
+			changed = true;
+		}
+		if !changed {
+			break;
+		}
+	}
 }
