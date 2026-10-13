@@ -699,13 +699,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		.output
 		.clone()
 		.unwrap_or_else(|| PathBuf::from(format!("./build/{}", stem)));
-	let ll = if cli.emit == Stage::Llvm {
-		cli.output
-			.clone()
-			.unwrap_or_else(|| PathBuf::from(format!("{}.ll", stem)))
-	} else {
-		exe.with_extension("ll")
-	};
+	let ll = exe.with_extension("ll");
 	let t = stage(cli.verbose, "LLVM codegen");
 	match guarded(diag, "code generation", || {
 		backend::codegen::write_ll(&mir, &ll)
