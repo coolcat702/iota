@@ -2,6 +2,7 @@
 
 use crate::parser::Span;
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
 	Error,
@@ -31,9 +32,11 @@ impl Diagnostic {
 	pub fn error(message: impl Into<String>, span: Option<Span>) -> Self {
 		Self::new(Severity::Error, message, span)
 	}
+	#[allow(unused)]
 	pub fn warning(message: impl Into<String>, span: Option<Span>) -> Self {
 		Self::new(Severity::Warning, message, span)
 	}
+	#[allow(unused)]
 	pub fn advice(message: impl Into<String>, span: Option<Span>) -> Self {
 		Self::new(Severity::Advice, message, span)
 	}

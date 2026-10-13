@@ -155,6 +155,7 @@ pub enum MExpr {
 	},
 }
 
+#[allow(unused)]
 pub struct MFunc {
 	pub name: String,
 	pub params: Vec<(Name, MTy)>,
@@ -178,6 +179,7 @@ pub struct ListInfo {
 	pub cons: usize,
 }
 
+#[allow(unused)]
 #[derive(Clone, Copy, Debug)]
 pub struct BoolInfo {
 	pub data: DataId,

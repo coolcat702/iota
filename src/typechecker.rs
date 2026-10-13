@@ -143,6 +143,7 @@ impl Scheme {
 		}
 	}
 
+	#[allow(unused)]
 	pub fn display(&self, subst: &Subst, hints: Option<&HashMap<u32, String>>) -> String {
 		if self.vars.is_empty() {
 			return self.ty.display(subst);
@@ -266,6 +267,7 @@ impl Subst {
 	}
 
 	// other then self
+	#[allow(unused)]
 	pub fn compose(&self, other: &Subst) -> Subst {
 		let mut result: HashMap<u32, Ty> =
 			other.0.iter().map(|(k, v)| (*k, self.apply(v))).collect();
@@ -292,6 +294,7 @@ pub struct TypeEnv {
 	pub instance_methods: HashMap<String, Scheme>, // per-instance concrete schemes
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct ClassDef {
 	pub params: Vec<String>,
@@ -299,6 +302,7 @@ pub struct ClassDef {
 }
 
 impl TypeEnv {
+	#[allow(unused)]
 	pub fn apply(&self, subst: &Subst) -> TypeEnv {
 		let vars = self
 			.vars
@@ -401,6 +405,7 @@ fn class_method_constraint_map(
 	map
 }
 
+#[allow(unused)]
 pub struct Checker<'r> {
 	pub registry: &'r mut SourceRegistry,
 	pub subst: Subst,
@@ -445,6 +450,7 @@ impl<'r> Checker<'r> {
 			.push(Diagnostic::error(msg, Some(span)).with_help(help));
 	}
 
+	#[allow(unused)]
 	fn note(&mut self, msg: impl Into<String>, span: Span) {
 		if self.suppress_errors {
 			return;
@@ -1946,7 +1952,7 @@ fn register_data_ctors(
 ) {
 	let result_ty = {
 		let mut t: Ty = Ty::Named(type_name.to_string());
-		for p in params {
+		for _p in params {
 			let tv = checker.fresh();
 			t = Ty::App(Box::new(t), Box::new(tv));
 		}
@@ -1963,7 +1969,10 @@ fn collect_ctors_from_sum(
 	env: &mut TypeEnv,
 	checker: &mut Checker<'_>,
 ) {
-	let Spanned { item: body, span } = spanned_body;
+	let Spanned {
+		item: body,
+		span: _span,
+	} = spanned_body;
 	match body {
 		AstType::Sum(a, b) => {
 			collect_ctors_from_sum(type_name, a, result_ty, params, env, checker);
@@ -2017,6 +2026,7 @@ fn rebuild_result_ty(type_name: &str, params: &[String], tvars: &HashMap<String,
 	t
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub enum TypedExpr {
 	Literal(Literal, Ty),
@@ -2051,6 +2061,7 @@ pub struct TypedBinding {
 	pub value: Option<TypedExpr>,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct TypedModule {
 	pub name: String,
@@ -2226,7 +2237,10 @@ fn forward_declare_tl_in(
 	checker: &mut Checker<'_>,
 	module_path: &[String],
 ) {
-	let Spanned { item: tl, span } = spanned_tl;
+	let Spanned {
+		item: tl,
+		span: _span,
+	} = spanned_tl;
 	match tl {
 		TopLevel::Module(mod_name, body) => {
 			let mut path = module_path.to_vec();
