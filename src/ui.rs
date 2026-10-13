@@ -87,12 +87,7 @@ pub struct Timer {
 	finished: bool,
 }
 
-// Same signature as old helper, so existing call sites don't change.
-// verbose prints a "starting" line
-pub fn stage(verbose: bool, label: &'static str) -> Timer {
-	if verbose && !ui().quiet {
-		eprintln!("  {} {}", paint(DIM, "…"), paint(DIM, label));
-	}
+pub fn stage(label: &'static str) -> Timer {
 	Timer {
 		label,
 		start: Instant::now(),

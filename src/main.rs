@@ -175,10 +175,6 @@ struct Cli {
 	#[arg(long)]
 	keep_ll: bool,
 
-	/// Narrate each stage (and how long it took) on stderr
-	#[arg(short, long)]
-	verbose: bool,
-
 	/// Print parser debug output
 	#[arg(short, long)]
 	parse_debug: bool,
@@ -497,7 +493,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		.unwrap_or_else(|| lang.item(LangItem::Entry).to_string());
 
 	// 2. parse
-	let t = stage(cli.verbose, "parse");
+	let t = stage("parse");
 	let (prelude_name, prelude_src) = match &cli.prelude {
 		Some(p) => match fs::read_to_string(p) {
 			Ok(s) => (p.display().to_string(), s),
@@ -553,7 +549,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	};
 
 	// 3. typecheck
-	let t = stage(cli.verbose, "typecheck");
+	let t = stage("typecheck");
 	let (env, typed, tc_diags) = typecheck(&combined, diag.registry);
 	diag.report_all(&tc_diags);
 	if has_errors(&tc_diags) {
@@ -577,7 +573,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	}
 
 	// 4. lower to anf
-	let t = stage(cli.verbose, "lower to IR");
+	let t = stage("lower to IR");
 	let (generic, overloads) = match ir::lower_program(&typed, &env, &lang) {
 		Ok(x) => x,
 		Err(ds) => {
@@ -596,7 +592,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	}
 
 	// 5. specialize
-	let t = stage(cli.verbose, "specialize");
+	let t = stage("specialize");
 	let ti = TypeInfo::new(&env);
 	let mut program = match spec::specialize(&generic, &overloads, &ti, &lang, &entry) {
 		Ok(p) => p,
@@ -614,7 +610,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	}
 
 	// 6. optimize
-	let t = stage(cli.verbose, "optimize");
+	let t = stage("optimize");
 	optimize::optimize(&mut program, cli.opt_mode, &lang);
 	optimize::prune_unreachable(&mut program, &entry);
 	t.done(format!(
@@ -633,7 +629,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	}
 
 	// 7. backend
-	let t = stage(cli.verbose, "lower to MIR");
+	let t = stage("lower to MIR");
 	let lowered = guarded(diag, "lowering to MIR", || {
 		backend::lower::lower(&program, &ti, &lang, &entry)
 	});
@@ -655,7 +651,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		return 1;
 	}
 
-	let t = stage(cli.verbose, "strictness analysis");
+	let t = stage("strictness analysis");
 	if guarded(diag, "lazification", || backend::lazy::run(&mut mir)).is_none() {
 		return 1;
 	}
@@ -671,7 +667,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		return 1;
 	}
 
-	let t = stage(cli.verbose, "reference counting");
+	let t = stage("reference counting");
 	if guarded(diag, "reference counting", || {
 		backend::refcount::run(&mut mir)
 	})
@@ -700,7 +696,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		.clone()
 		.unwrap_or_else(|| PathBuf::from(format!("./build/{}", stem)));
 	let ll = exe.with_extension("ll");
-	let t = stage(cli.verbose, "LLVM codegen");
+	let t = stage("LLVM codegen");
 	match guarded(diag, "code generation", || {
 		backend::codegen::write_ll(&mir, &ll)
 	}) {
@@ -717,7 +713,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	}
 
 	// 8. link
-	let t = stage(cli.verbose, "link");
+	let t = stage("link");
 	let linked = link(cli, diag, &ll, &exe);
 	if !cli.keep_ll {
 		let _ = fs::remove_file(&ll);
