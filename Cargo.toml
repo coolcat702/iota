@@ -16,6 +16,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # inkwell 0.10 (2026-08) with LLVM 22.1. Needs an LLVM 22.1 install that
 # `llvm-config` can find (or set LLVM_SYS_221_PREFIX=/path/to/llvm-22).
 inkwell = { version = "0.10", features = ["llvm22-1"] }
+im = "15.1.0"
 
 [profile.release]
 opt-level = 3

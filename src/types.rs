@@ -1,5 +1,6 @@
 // type-level queries used by spec and backend
 
+use im::HashMap as ImHashMap;
 use std::collections::HashMap;
 
 use crate::typechecker::{ty_head_name, Scheme, Ty, TypeEnv};
@@ -7,8 +8,8 @@ use crate::typechecker::{ty_head_name, Scheme, Ty, TypeEnv};
 pub struct TypeInfo {
 	pub ctor_scheme: HashMap<String, Scheme>,
 	pub type_ctors: HashMap<String, Vec<String>>, // name, ctor names (sorted)
-	pub type_arity: HashMap<String, usize>,
-	pub aliases: HashMap<String, Ty>,
+	pub type_arity: ImHashMap<String, usize>,
+	pub aliases: ImHashMap<String, Ty>,
 }
 
 /// App(App(f, a), b) -> (f, [a, b]).

@@ -1,5 +1,6 @@
 // typed ANF IR + lowering pass from type-checked AST
 
+use im::HashMap as ImHashMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -121,13 +122,13 @@ pub struct Overloads {
 	/// method name -> (its generic type, the type variable that is the class parameter)
 	pub methods: HashMap<String, (Ty, u32)>,
 	/// method name -> class name
-	pub class_of: HashMap<String, String>,
+	pub class_of: ImHashMap<String, String>,
 	/// every canonical binding name (instance methods are `Head:method`)
 	pub canonical: HashSet<Name>,
 	/// zero-parameter type aliases and data types, for naming a type's instance head
 	pub type_ctor_names: HashMap<String, Vec<String>>,
-	pub type_arity: HashMap<String, usize>,
-	pub aliases: HashMap<String, Ty>,
+	pub type_arity: ImHashMap<String, usize>,
+	pub aliases: ImHashMap<String, Ty>,
 }
 
 // ============================================================================
@@ -399,13 +400,13 @@ pub struct Lowerer<'l> {
 	counter: u64,
 	dispatch: HashMap<String, Vec<(Name, Ty)>>,
 	canonical: HashSet<Name>,
-	class_methods: HashMap<String, String>,
+	class_methods: ImHashMap<String, String>,
 	/// `[Type, Ctor]` -> the constructor's generic scheme.
 	data_ctors: HashMap<Vec<String>, Scheme>,
 	/// data type name -> its constructor names (sorted).
 	type_ctor_names: HashMap<String, Vec<String>>,
-	type_arity: HashMap<String, usize>,
-	aliases: HashMap<String, Ty>,
+	type_arity: ImHashMap<String, usize>,
+	aliases: ImHashMap<String, Ty>,
 	errors: Vec<(String, Span)>,
 	current_span: Span,
 }
@@ -415,7 +416,7 @@ impl<'l> Lowerer<'l> {
 		lang: &'l Lang,
 		dispatch: HashMap<String, Vec<(Name, Ty)>>,
 		canonical: HashSet<Name>,
-		class_methods: HashMap<String, String>,
+		class_methods: ImHashMap<String, String>,
 		env: &TypeEnv,
 	) -> Self {
 		let data_ctors: HashMap<Vec<String>, Scheme> = env

@@ -282,16 +282,18 @@ impl Subst {
 	}
 }
 
+use im::HashMap as ImMap;
+
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
-	pub vars: HashMap<String, Scheme>,            // binding -> scheme
-	pub type_ctors: HashMap<String, usize>,       // name -> arity
-	pub data_ctors: HashMap<Vec<String>, Scheme>, // ctor -> scheme giving constructor fn type
-	pub class_methods: HashMap<String, String>,   // method name -> class name
-	pub classes: HashMap<String, ClassDef>,       // class name -> (params, methods)
-	pub instances: Vec<(String, Ty)>,             // (class, concrete ty head)
-	pub type_aliases: HashMap<String, Ty>,
-	pub instance_methods: HashMap<String, Scheme>, // per-instance concrete schemes
+	pub vars: ImMap<String, Scheme>,            // binding -> scheme
+	pub type_ctors: ImMap<String, usize>,       // name -> arity
+	pub data_ctors: ImMap<Vec<String>, Scheme>, // ctor -> scheme giving constructor fn type
+	pub class_methods: ImMap<String, String>,   // method name -> class name
+	pub classes: ImMap<String, ClassDef>,       // class name -> (params, methods)
+	pub instances: im::Vector<(String, Ty)>,    // (class, concrete ty head)
+	pub type_aliases: ImMap<String, Ty>,
+	pub instance_methods: ImMap<String, Scheme>, // per-instance concrete schemes
 }
 
 #[allow(unused)]
@@ -315,38 +317,38 @@ impl TypeEnv {
 		}
 	}
 
-	pub fn free_vars(&self) -> Vec<u32> {
-		let mut fvs = vec![];
-		for s in self.vars.values() {
-			fvs.extend(free_vars_scheme(s));
-		}
-		fvs
-	}
-
 	pub fn insert(&mut self, name: String, scheme: Scheme) {
 		self.vars.insert(name, scheme);
 	}
 }
 
-fn free_vars_ty(ty: &Ty) -> Vec<u32> {
+fn free_vars_into(ty: &Ty, out: &mut HashSet<u32>) {
 	match ty {
-		Ty::Var(n) => vec![*n],
-		Ty::Fn(a, b) | Ty::Product(a, b) | Ty::Sum(a, b) | Ty::App(a, b) => {
-			[free_vars_ty(a), free_vars_ty(b)].concat()
+		Ty::Var(n) => {
+			out.insert(*n);
 		}
-		_ => vec![],
+		Ty::Fn(a, b) | Ty::Product(a, b) | Ty::Sum(a, b) | Ty::App(a, b) => {
+			free_vars_into(a, out);
+			free_vars_into(b, out);
+		}
+		_ => {}
 	}
 }
 
-fn free_vars_scheme(s: &Scheme) -> Vec<u32> {
-	free_vars_ty(&s.ty)
-		.into_iter()
-		.filter(|v| !s.vars.contains(v))
-		.collect()
-}
-
-fn generalise(env: &TypeEnv, ty: &Ty) -> Scheme {
-	generalise_with_constraints(env, ty, &HashMap::new())
+impl TypeEnv {
+	pub fn free_vars(&self) -> HashSet<u32> {
+		let mut fvs = HashSet::new();
+		for s in self.vars.values() {
+			if s.vars.is_empty() {
+				free_vars_into(&s.ty, &mut fvs);
+			} else {
+				let mut tmp = HashSet::new();
+				free_vars_into(&s.ty, &mut tmp);
+				fvs.extend(tmp.into_iter().filter(|v| !s.vars.contains(v)));
+			}
+		}
+		fvs
+	}
 }
 
 fn generalise_with_constraints(
@@ -354,14 +356,24 @@ fn generalise_with_constraints(
 	ty: &Ty,
 	constraints: &HashMap<u32, Vec<String>>,
 ) -> Scheme {
-	let env_fvs = env.free_vars();
-	let ty_fvs = free_vars_ty(ty);
-	let mut bound: Vec<u32> = Vec::new();
-	for v in ty_fvs {
-		if !env_fvs.contains(&v) && !bound.contains(&v) {
-			bound.push(v);
-		}
+	// first-occurrence order, deduplicated (same order as before)
+	let mut ty_fvs: Vec<u32> = Vec::new();
+	collect_ty_vars(ty, &mut ty_fvs);
+
+	// nothing to generalise: skip walking the whole environment
+	if ty_fvs.is_empty() {
+		return Scheme {
+			vars: Vec::new(),
+			ty: ty.clone(),
+			constraints: HashMap::new(),
+		};
 	}
+
+	let env_fvs = env.free_vars();
+	let bound: Vec<u32> = ty_fvs
+		.into_iter()
+		.filter(|v| !env_fvs.contains(v))
+		.collect();
 	let bound_constraints: HashMap<u32, Vec<String>> = bound
 		.iter()
 		.filter_map(|v| constraints.get(v).map(|cs| (*v, cs.clone())))
@@ -371,6 +383,10 @@ fn generalise_with_constraints(
 		ty: ty.clone(),
 		constraints: bound_constraints,
 	}
+}
+
+fn generalise(env: &TypeEnv, ty: &Ty) -> Scheme {
+	generalise_with_constraints(env, ty, &HashMap::new())
 }
 
 fn class_method_constraint_map(
@@ -403,6 +419,16 @@ fn class_method_constraint_map(
 	}
 
 	map
+}
+
+fn occurs(n: u32, ty: &Ty) -> bool {
+	match ty {
+		Ty::Var(m) => *m == n,
+		Ty::Fn(a, b) | Ty::Product(a, b) | Ty::Sum(a, b) | Ty::App(a, b) => {
+			occurs(n, a) || occurs(n, b)
+		}
+		_ => false,
+	}
 }
 
 #[allow(unused)]
@@ -511,7 +537,7 @@ impl<'r> Checker<'r> {
 					return;
 				}
 
-				if free_vars_ty(t).contains(&n) {
+				if occurs(n, t) {
 					self.error(
 						format!("Infinite type: t{} ~ {}", n, t.display(&self.subst)),
 						span,
@@ -1777,7 +1803,7 @@ fn collect_top_level_in(
 			}
 			for inst in &local_env.instances {
 				if !env.instances.contains(inst) {
-					env.instances.push(inst.clone());
+					env.instances.push_back(inst.clone());
 				}
 			}
 			for (key, scheme) in &local_env.instance_methods {
@@ -1871,7 +1897,7 @@ fn collect_top_level_in(
 				.map(|first| checker.ast_type_to_ty(first, &mut inst_tvars.clone(), env));
 			if let Some(inst_ty) = &inst_ty {
 				env.instances
-					.push((class_name.item.clone(), inst_ty.clone()));
+					.push_back((class_name.item.clone(), inst_ty.clone()));
 			}
 			for binding in bindings {
 				// every instance has same bare name
