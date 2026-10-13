@@ -460,7 +460,7 @@ end
 let head a
     : List a -> Maybe a
     = match
-        [] -> [] end
+        [] -> Maybe:Nil end
         List:Cons (x * _) -> Maybe:Val x end
     end
 end
@@ -1457,7 +1457,7 @@ let show_items (a : Showable)
     : List a -> String
     = match
         []                 -> "" end
-        [x]                -> show x end
+        List:Cons (x * []) -> show x end
         List:Cons (x * xs) -> concat (show x) (concat ", " (show_items xs)) end
     end
 end
@@ -1530,7 +1530,7 @@ instance Parseable Char is
     let parse
         : String -> Maybe Char
         = match
-            [c] -> Maybe:Val c end
+            List:Cons (c * []) -> Maybe:Val c end
             _   -> Maybe:Nil end
         end
     end
