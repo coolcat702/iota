@@ -1,0 +1,58 @@
+module Main is
+
+type Op = String * (Float -> Float -> Float)
+end
+
+type OpTable = List Op
+end
+
+let add_op : Op
+    = "+" * add
+end
+
+let sub_op : Op
+    = "-" * sub
+end
+
+let mul_op : Op
+    = "*" * mul
+end
+
+let div_op : Op
+    = "/" * div
+end
+
+let ops : OpTable
+    = [add_op, sub_op, mul_op, div_op]
+end
+
+# The function stored under `name`, if the table has one.
+let find_op
+    : OpTable -> String -> Maybe (Float -> Float -> Float)
+    = match
+        List:Nil, _ -> Maybe:Nil end
+        List:Cons ((n * f) * rest), name ->
+            cond (eq n name) (Maybe:Val f) (find_op rest name)
+        end
+    end
+end
+
+let eval_op
+    : OpTable -> String -> Float -> Float -> Maybe Float
+    = fn table ->
+        fn op_name ->
+            fn x ->
+                fn y ->
+                    maybe_map (fn f -> f x y end) (find_op table op_name)
+                end
+            end
+        end
+    end
+end
+
+let main
+    : IO Unit
+    = println (show (eval_op ops "*" 6.0 7.0)) > then
+      (println (show (eval_op ops "/" 1.0 4.0))) > then
+      (println (show (eval_op ops "^" 2.0 3.0)))
+end

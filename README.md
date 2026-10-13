@@ -111,7 +111,7 @@ let filter_evens
     = filter even
 with even
     : Int -> Bool
-    = eq 0 < flip mod 2
+    = comp (eq 0) (flip mod 2)
 end
 ```
 
@@ -215,10 +215,13 @@ To instantiate this type:
 ```iota
 let xs
     : List Int
-    = List:Cons 1 <
-        List:Cons 2 <
-            List:Cons 3 <
-                List:Cons 4 List:Nil
+    = List:Cons (1 *
+        List:Cons (2 *
+            List:Cons (3 *
+                List:Cons (4 * List:Nil)
+            )
+        )
+    )
 end
 # [1, 2, 3, 4]
 ```
@@ -231,7 +234,7 @@ Lists have many functions that operate them, including:
 [1, 2, 3, 4] > map (mul 2)
 # [2, 4, 6, 8]
 
-[1, 2, 3, 4] > filter (eq 0 < flip mod 2)
+[1, 2, 3, 4] > filter (comp (eq 0) (flip mod 2))
 # [2, 4]
 
 zip [1, 3, 5, 7] [2, 4, 6, 8]
@@ -261,7 +264,7 @@ Conditionals can be done using `match`, or using `cond`:
 let cond a
     : Bool -> a -> a -> a
     = match
-        Bool:True -> const       end
+        Bool:True  -> const      end
         Bool:False -> flip const end
     end
 end
@@ -332,7 +335,7 @@ Successable,
 Orderable, Eqable,
 Showable, Parseable,
 Functor, Monad,
-Default,
+Default
 ```
 
 ## Ranges
@@ -343,7 +346,7 @@ lazy, `from` is a genuinely infinite list; only the part that is looked at is ev
 ```iota
 let range (a : Successable, Orderable)
     : a -> a -> List a
-    = comp from to
+    = comp to from
 end
 
 let from (a : Successable)
@@ -545,7 +548,7 @@ Here is an example with `Maybe`, which implements the monad class.
 ```iota
 let half
     : Int -> Maybe Int
-    = fork even (Maybe:Val < flip div 2) (const Maybe:Nil)
+    = fork even (comp Maybe:Val (flip div 2)) (const Maybe:Nil)
 with even
     : Int -> Bool
     = comp (eq 0) (flip mod 2)
@@ -574,171 +577,6 @@ end
 Because `Maybe` implements the `Monad` class, we can use `bind` on it.
 Bind allows you to chain operations without losing the monadic context.
 
-For completeness, here is the implementation of `Monad` for `Maybe`.
-
-```iota
-instance Monad (Maybe a) is
-    let return a
-        : a -> Maybe a
-        = Maybe:Val
-    end
-
-    let bind a b
-        : (a -> Maybe b) -> Maybe a -> Maybe b
-        = match
-            _, Maybe:Nil   -> Maybe:Nil       end
-            f, Maybe:Val x -> Maybe:Val < f x end
-        end
-    end
-end
-```
-
 ## Examples
 
-```iota
-module Factorial is
-
-let factorial
-    : Int -> Int
-    = fn x ->
-        cond (lse x 1) 1 (mul x < factorial (sub x 1))
-    end
-end
-```
-
-```iota
-module ListOps is
-
-let map a b
-    : (a -> b) -> List a -> List b
-    = match
-        _, List:Nil          -> List:Nil end
-        f, List:Cons (x * xs) -> (comp List:Cons pair) (f x) (map f xs)
-    end
-end
-
-let filter a
-    : (a -> Bool) -> List a -> List a
-    = match
-        _, List:Nil           -> List:Nil end
-        p, List:Cons (x * xs) -> cond (p x) (List:Cons (pair x (filter p xs))) (filter p xs) end
-    end
-end
-
-let length a
-    : List a -> Int
-    = comp sum map (const 1)
-end
-
-let zip_with a b c
-    : (a -> b -> c) -> List a -> List b -> List c
-        match
-            _, List:Nil, _                            -> List:Nil                                       end
-            _, _, List:Nil                            -> List:Nil                                       end
-            f, List:Cons (x * xs), List:Cons (y * ys) -> comp List:Cons pair (f x y) (zip_with f xs ys) end
-        end
-    end
-end
-
-
-let xs
-    : List Int
-    = [1, 2, 3, 4] > filter < (eq 0 > over (flip mod 2)) > map < flip div 2
-end
-# [1,2]
-```
-
-```iota
-module MoreLists is
-
-let foldl
-    a b : (b -> a -> b) -> b -> List a -> b
-    = match
-        _, c, [] -> c end
-        f, c, xs -> foldl f (f c < fst xs) < rst xs end
-    end
-end
-
-let scan
-    a b : (b -> a -> b) -> b -> [a] -> [b]
-    = match
-        _, c, [] -> [c] end
-        f, c, xs -> (comp List:Cons pair) c scan f (f c < fst xs) < rst xs end
-    end
-end
-```
-
-```iota
-module IoOps is
-
-let main
-    : IO Unit
-    = println "Enter your name:" > then
-    (getln > (bind fn name ->
-        println < concat "Hello, " name
-    end))
-end
-```
-
-```iota
-module MoreIo is
-
-let main
-    : IO Unit
-    = println "Enter a number:" > then
-    (getln > (bind fn num ->
-        println < output num
-    end))
-with output
-    : String -> String
-    = fn s -> concat (concat s " is ") (parity s) end
-with parity
-    : String -> String
-    = fn s -> cond (even (parse_or_default s)) "Even" "Odd" end
-with even
-    : Int -> Bool
-    = fn x -> eq 0 (mod x 2) end
-with parse_or_default (a : Parseable, Default)
-    : String -> a
-    = fn s -> map_nil_same default (parse s) end
-end
-```
-
-```iota
-module OpTables is
-
-type OpTable = List Op
-end
-
-type Op = String * (Float -> Float -> Float)
-end
-
-let add_op : Op
-    = "+" * add
-end
-
-let sub_op : Op
-    = "-" * sub
-end
-
-let mul_op : Op
-    = "*" * mul
-end
-
-let div_op : Op
-    = "/" * div
-end
-
-let ops : OpTable
-    = [add_op, sub_op, mul_op, div_op]
-end
-
-let eval_op
-    : OpTable -> String -> Float -> Float -> Maybe Float
-    = fn table ->
-        fn op_name ->
-            index_of table op_name > map (idx table) > ap
-        end
-    end
-end
-```
+Example programs are found in `examples/`.
