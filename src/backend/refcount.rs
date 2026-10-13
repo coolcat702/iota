@@ -333,68 +333,120 @@ impl<'a> P<'a> {
 		}
 	}
 
-	fn go(&mut self, owned: BTreeSet<Name>, e: MExpr) -> MExpr {
+	fn go(&mut self, mut owned: BTreeSet<Name>, e: MExpr) -> MExpr {
+		struct Step {
+			x: Name,
+			ty: MTy,
+			v: MValue,
+			pre_dups: Vec<Name>,
+			post_drops: Vec<Name>,
+			drop_x: bool,
+		}
+
+		// unwind the straight-line block of lets
+		let mut spine: Vec<(Name, MTy, MValue)> = Vec::new();
+		let mut cur = e;
+		while let MExpr::Let(x, ty, v, rest) = cur {
+			spine.push((x, ty, v));
+			cur = *rest;
+		}
+		let leaf = cur;
+		let n = spine.len();
+
+		// after[i] = free variables of everything that follows binding i
+		let mut after: Vec<BTreeSet<Name>> = vec![BTreeSet::new(); n];
+		if n > 0 {
+			let mut live = fv_expr(&leaf);
+			for i in (0..n).rev() {
+				after[i] = live.clone();
+				if i > 0 {
+					let (x, _, v) = &spine[i];
+					live.remove(x);
+					live.extend(fv_value(v));
+				}
+			}
+		}
+
+		// forward passm same as old per-`Let` case
+		let mut steps: Vec<Step> = Vec::with_capacity(n);
+		for (i, (x, ty, v)) in spine.into_iter().enumerate() {
+			self.tys.insert(x.clone(), ty.clone());
+			let live_rest = &after[i];
+			let x_rc = self.facts.needs_rc(&ty);
+
+			let mut counts: BTreeMap<Name, (usize, usize)> = BTreeMap::new();
+			for (name, o) in self.uses(&v) {
+				if !owned.contains(&name) {
+					continue; // a borrowed param, never duped or dropped here
+				}
+				let c = counts.entry(name).or_insert((0, 0));
+				if o {
+					c.0 += 1;
+				} else {
+					c.1 += 1;
+				}
+			}
+			let mut pre_dups = Vec::new();
+			let mut post_drops = Vec::new();
+			for (y, (n_own, n_b)) in &counts {
+				if live_rest.contains(y) {
+					for _ in 0..*n_own {
+						pre_dups.push(y.clone());
+					}
+				} else if *n_b > 0 {
+					// a borrowed use needs to be valid for the whole operation,
+					// so every owned use needs its own ref and the caller's is
+					// released after (otherwise a callee could free what it's
+					// borrowing)
+					for _ in 0..*n_own {
+						pre_dups.push(y.clone());
+					}
+					post_drops.push(y.clone());
+				} else {
+					for _ in 1..*n_own {
+						pre_dups.push(y.clone());
+					}
+				}
+			}
+
+			owned.retain(|y| live_rest.contains(y));
+			if x_rc && live_rest.contains(&x) {
+				owned.insert(x.clone());
+			}
+			let drop_x = x_rc && !live_rest.contains(&x);
+			let v = self.proc_value(v);
+			steps.push(Step {
+				x,
+				ty,
+				v,
+				pre_dups,
+				post_drops,
+				drop_x,
+			});
+		}
+
+		let mut tail = self.go_leaf(owned, leaf);
+
+		// rebuild back to front
+		for s in steps.into_iter().rev() {
+			if s.drop_x {
+				tail = MExpr::Drop(s.x.clone(), Box::new(tail));
+			}
+			let inner = drops(s.post_drops, tail);
+			tail = dups(s.pre_dups, MExpr::Let(s.x, s.ty, s.v, Box::new(inner)));
+		}
+		tail
+	}
+
+	// what ends a let-spine: everything except `Let`
+	fn go_leaf(&mut self, owned: BTreeSet<Name>, e: MExpr) -> MExpr {
 		match e {
+			MExpr::Let(..) => unreachable!("`go` unwinds every leading Let"),
 			MExpr::Ret(a) => MExpr::Ret(a),
 			MExpr::Dup(n, r) => MExpr::Dup(n, Box::new(self.go(owned, *r))),
 			MExpr::Drop(n, r) => MExpr::Drop(n, Box::new(self.go(owned, *r))),
 			MExpr::DropReuse(t, x, r) => MExpr::DropReuse(t, x, Box::new(self.go(owned, *r))),
 			MExpr::Take { .. } => unreachable!("fusion runs after reference counting insertion"),
-			MExpr::Let(x, ty, v, rest) => {
-				self.tys.insert(x.clone(), ty.clone());
-				let live_rest = fv_expr(&rest);
-				let x_rc = self.facts.needs_rc(&ty);
-
-				let mut counts: BTreeMap<Name, (usize, usize)> = BTreeMap::new();
-				for (n, o) in self.uses(&v) {
-					if !owned.contains(&n) {
-						continue; // a borrowed parameter: never dup'd or dropped here
-					}
-					let c = counts.entry(n).or_insert((0, 0));
-					if o {
-						c.0 += 1;
-					} else {
-						c.1 += 1;
-					}
-				}
-				let mut pre_dups = Vec::new();
-				let mut post_drops = Vec::new();
-				for (y, (n_own, n_b)) in &counts {
-					if live_rest.contains(y) {
-						for _ in 0..*n_own {
-							pre_dups.push(y.clone());
-						}
-					} else if *n_b > 0 {
-						// A borrowed use must stay valid for the whole operation, so
-						// every owned use needs its own reference and the caller's
-						// own is released afterwards (otherwise a callee could free
-						// what it is still borrowing).
-						for _ in 0..*n_own {
-							pre_dups.push(y.clone());
-						}
-						post_drops.push(y.clone());
-					} else {
-						for _ in 1..*n_own {
-							pre_dups.push(y.clone());
-						}
-					}
-				}
-
-				let mut owned_next: BTreeSet<Name> = owned
-					.into_iter()
-					.filter(|y| live_rest.contains(y))
-					.collect();
-				if x_rc && live_rest.contains(&x) {
-					owned_next.insert(x.clone());
-				}
-				let v2 = self.proc_value(v);
-				let mut tail = self.go(owned_next, *rest);
-				if x_rc && !live_rest.contains(&x) {
-					tail = MExpr::Drop(x.clone(), Box::new(tail));
-				}
-				let tail = drops(post_drops, tail);
-				dups(pre_dups, MExpr::Let(x, ty, v2, Box::new(tail)))
-			}
 			MExpr::Case(a, arms) => {
 				let mut out = Vec::new();
 				for arm in arms {
