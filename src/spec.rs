@@ -18,6 +18,7 @@ struct Job {
 	mangled: Name,
 }
 
+#[allow(unused)]
 struct Spec<'a> {
 	funcs: HashMap<&'a str, &'a Function>,
 	externs: HashMap<&'a str, &'a Extern>,

@@ -14,7 +14,6 @@ use std::{
 	panic::{catch_unwind, AssertUnwindSafe},
 	path::{Path, PathBuf},
 	process::{self, Command},
-	time::Instant,
 };
 
 use ariadne::{Color, Label, Report, ReportKind};
@@ -29,6 +28,7 @@ mod parser;
 mod spec;
 mod typechecker;
 mod types;
+mod ui;
 
 use backend::mir::{EntryKind, Facts, MProgram};
 use diag::{has_errors, Diagnostic, Severity};
@@ -36,6 +36,7 @@ use lang::{Lang, LangItem};
 use parser::{parse, Program, SourceRegistry, Span, Spanned, TopLevel};
 use typechecker::{typecheck, Subst};
 use types::TypeInfo;
+use ui::stage;
 
 // everything included in bin
 const PRELUDE_SRC: &str = include_str!("../prelude/mod.iota");
@@ -185,6 +186,10 @@ struct Cli {
 	/// Print type-checker debug output
 	#[arg(short, long)]
 	type_debug: bool,
+
+	/// Suppress progress output (errors are still shown)
+	#[arg(short, long)]
+	quiet: bool,
 }
 
 struct Loader<'r, 'd> {
@@ -287,36 +292,6 @@ fn collect_file_imports(program: &Program) -> Vec<(String, Span)> {
 	let mut out = Vec::new();
 	program.0.iter().for_each(|i| go(i, &mut out));
 	out
-}
-
-struct Timer {
-	verbose: bool,
-	label: &'static str,
-	start: Instant,
-}
-
-fn stage(verbose: bool, label: &'static str) -> Timer {
-	if verbose {
-		eprintln!("[iota] {} ...", label);
-	}
-	Timer {
-		verbose,
-		label,
-		start: Instant::now(),
-	}
-}
-
-impl Timer {
-	fn done(self, detail: impl AsRef<str>) {
-		if self.verbose {
-			eprintln!(
-				"[iota] {} done in {:.1?}{}",
-				self.label,
-				self.start.elapsed(),
-				detail.as_ref()
-			);
-		}
-	}
 }
 
 // rust panics VERY BAD for user
@@ -457,6 +432,7 @@ fn link(cli: &Cli, diag: &mut Diag, ll: &Path, exe: &Path) -> bool {
 
 fn main() {
 	let cli = Cli::parse();
+	ui::init(cli.quiet);
 	// big stack size -- a long let chain is as deep as it is long (bc recursion)
 	let worker = std::thread::Builder::new()
 		.stack_size(1 << 30)
@@ -488,6 +464,8 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		);
 		return 1;
 	}
+
+	ui::header(&cli.file.display().to_string());
 
 	// 1. lang manifest
 	let (lang_name, lang_src) = match &cli.lang {
@@ -755,6 +733,8 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	}
 	t.done(format!(" -> {}", exe.display()));
 
+	ui::finished(&exe);
+
 	// 9. run
 	if cli.run {
 		let path = if exe.is_absolute() || exe.components().count() > 1 {
@@ -762,6 +742,9 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		} else {
 			PathBuf::from(".").join(&exe)
 		};
+
+		ui::running(&path);
+
 		return match Command::new(&path).status() {
 			Ok(s) => s.code().unwrap_or(1),
 			Err(e) => {

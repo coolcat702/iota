@@ -43,6 +43,7 @@ impl SourceRegistry {
 		Ok((id, content))
 	}
 
+	#[allow(unused)]
 	pub fn filename(&self, id: usize) -> &str {
 		self.sources
 			.get(id)
@@ -330,6 +331,7 @@ pub struct Constraint {
 	pub class_names: Vec<Spanned<String>>,
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum Literal {
 	Nil,
@@ -397,6 +399,7 @@ pub fn parse(
 	}
 }
 
+#[allow(unused)]
 pub fn parse_file(
 	registry: &mut SourceRegistry,
 	path: impl AsRef<Path>,
@@ -422,7 +425,7 @@ impl Parser {
 		}
 	}
 
-	fn lex(&mut self, registry: &mut SourceRegistry) {
+	fn lex(&mut self, _registry: &mut SourceRegistry) {
 		let mut lexer = Token::lexer(&self.src);
 		while let Some(tok) = lexer.next() {
 			let Ok(tok) = tok else {
@@ -480,6 +483,7 @@ impl Parser {
 	}
 }
 
+#[allow(unused)]
 impl Program {
 	pub fn json(&self) -> Result<String, serde_json::Error> {
 		serde_json::to_string(self)

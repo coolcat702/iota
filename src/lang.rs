@@ -38,6 +38,7 @@ macro_rules! intrinsics {
 	($($variant:ident = $key:literal),* $(,)?) => {
 		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 		pub enum Intrinsic { $($variant),* }
+		#[allow(unused)]
 		impl Intrinsic {
 			pub const ALL: &'static [Intrinsic] = &[$(Intrinsic::$variant),*];
 			pub fn key(self) -> &'static str {

@@ -6,7 +6,7 @@ use std::fmt;
 use crate::diag::Diagnostic;
 use crate::lang::{Intrinsic, Lang, LangItem};
 
-use crate::parser::{Literal, Pattern, Qualified, Span, Spanned};
+use crate::parser::{Literal, Pattern, Span, Spanned};
 use crate::typechecker::{Scheme, Ty, TypeEnv, TypedBinding, TypedExpr};
 
 pub type Name = String;
@@ -29,6 +29,7 @@ pub enum Atom {
 }
 
 /// The right-hand side of a `let`.
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub enum Value {
 	Atom(Atom),
@@ -114,6 +115,7 @@ pub struct IrProgram {
 }
 
 /// What the specializer needs to resolve class-method references.
+#[allow(unused)]
 #[derive(Default)]
 pub struct Overloads {
 	/// method name -> (its generic type, the type variable that is the class parameter)
