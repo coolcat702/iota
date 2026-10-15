@@ -436,6 +436,7 @@ pub struct Checker<'r> {
 	pub registry: &'r mut SourceRegistry,
 	pub subst: Subst,
 	next_var: u32,
+	pub typed: Vec<Spanned<TypedBinding>>,
 	pub had_error: bool,
 	pub diags: Vec<Diagnostic>,
 	suppress_errors: bool,
@@ -447,6 +448,7 @@ impl<'r> Checker<'r> {
 			registry,
 			subst: Subst::default(),
 			next_var: 0,
+			typed: Vec::new(),
 			had_error: false,
 			diags: Vec::new(),
 			suppress_errors: false,
@@ -722,45 +724,121 @@ impl<'r> Checker<'r> {
 		}
 	}
 
-	pub fn infer(&mut self, spanned_expr: &Spanned<Expr>, env: &TypeEnv) -> Ty {
+	pub fn annotate(&mut self, spanned_expr: &Spanned<Expr>, env: &TypeEnv) -> TypedExpr {
 		let Spanned { item: expr, span } = spanned_expr;
 		match expr {
-			Expr::Literal(lit) => self.infer_literal(
-				&Spanned {
-					item: lit.clone(),
-					span: *span,
-				},
-				env,
-			),
-			Expr::Qualified(q) => self.infer_qualified(
-				&Spanned {
-					item: q.clone(),
-					span: *span,
-				},
-				env,
-			),
+			Expr::Literal(lit) => {
+				let ty = self.infer_literal(
+					&Spanned {
+						item: lit.clone(),
+						span: *span,
+					},
+					env,
+				);
+				TypedExpr::Literal(lit.clone(), self.subst.apply(&ty))
+			}
+			Expr::Qualified(q) => {
+				let ty = self.infer_qualified(
+					&Spanned {
+						item: q.clone(),
+						span: *span,
+					},
+					env,
+				);
+				TypedExpr::Var(q.0.clone(), self.subst.apply(&ty))
+			}
 			Expr::Fn(arg, body) => {
 				let arg_ty = self.fresh();
 				let mut env2 = env.clone();
 				env2.insert(arg.item.clone(), Scheme::mono(arg_ty.clone()));
-				let body_ty = self.infer(body, &env2);
-				Ty::Fn(Box::new(self.subst.apply(&arg_ty)), Box::new(body_ty))
+				let body_expr = self.annotate(body, &env2);
+				let fn_ty = Ty::Fn(
+					Box::new(self.subst.apply(&arg_ty)),
+					Box::new(body_expr.ty().clone()),
+				);
+				TypedExpr::Fn(arg.item.clone(), Box::new(body_expr), fn_ty)
 			}
 			Expr::App(func, arg) => {
-				let ft = self.infer(func, env);
-				let at = self.infer(arg, env);
+				let func_expr = self.annotate(func, env);
+				let arg_expr = self.annotate(arg, env);
 				let ret = self.fresh();
-				let expected_fn = Ty::Fn(Box::new(at), Box::new(ret.clone()));
-				self.unify(&ft, &expected_fn, env, *span);
-				self.subst.apply(&ret)
+				let expected_fn = Ty::Fn(Box::new(arg_expr.ty().clone()), Box::new(ret.clone()));
+				self.unify(func_expr.ty(), &expected_fn, env, *span);
+				let ty = self.subst.apply(&ret);
+				TypedExpr::App(Box::new(func_expr), Box::new(arg_expr), ty)
 			}
 			Expr::Product(a, b) => {
-				let ta = self.infer(a, env);
-				let tb = self.infer(b, env);
-				Ty::Product(Box::new(ta), Box::new(tb))
+				let ae = self.annotate(a, env);
+				let be = self.annotate(b, env);
+				let ty = Ty::Product(Box::new(ae.ty().clone()), Box::new(be.ty().clone()));
+				TypedExpr::Product(Box::new(ae), Box::new(be), ty)
 			}
-			Expr::Match(cases) => self.infer_match(cases, env, *span),
+			Expr::Match(cases) => self.annotate_match(cases, env, *span),
 		}
+	}
+
+	// the old `infer_match`, but building the typed branches as it goes
+	fn annotate_match(
+		&mut self,
+		cases: &[(Vec<Spanned<Pattern>>, Spanned<Expr>)],
+		env: &TypeEnv,
+		span: Span,
+	) -> TypedExpr {
+		if cases.is_empty() {
+			self.error("match expression has no cases", span);
+			let t = self.fresh();
+			return TypedExpr::Match(Vec::new(), t);
+		}
+
+		let mut expected_branch_ty: Option<Ty> = None;
+		// arg types of the first case; after every case is unified with the
+		// others these are authoritative
+		let mut col_tys: Option<Vec<Ty>> = None;
+		let mut typed_cases: Vec<(Vec<Pattern>, TypedExpr)> = Vec::with_capacity(cases.len());
+
+		for (pats, body) in cases {
+			let mut branch_env = env.clone();
+			let mut pat_tys = Vec::new();
+			for pat in pats {
+				let ty = self.fresh();
+				branch_env
+					.vars
+					.extend(self.check_pattern(pat, &ty, &branch_env));
+				pat_tys.push(ty);
+			}
+			if col_tys.is_none() {
+				col_tys = Some(pat_tys.clone());
+			}
+
+			let body_e = self.annotate(body, &branch_env);
+			let mut body_ty = body_e.ty().clone();
+			for ty in pat_tys.into_iter().rev() {
+				body_ty = Ty::Fn(Box::new(self.subst.apply(&ty)), Box::new(body_ty));
+			}
+			match &expected_branch_ty {
+				Some(expected) => {
+					self.unify(&body_ty, expected, &branch_env, span);
+				}
+				None => {
+					expected_branch_ty = Some(body_ty);
+				}
+			}
+			typed_cases.push((pats.iter().map(|p| p.item.clone()).collect(), body_e));
+		}
+
+		if let Some(tys) = col_tys {
+			let final_col_tys: Vec<Ty> = tys.iter().map(|t| self.subst.apply(t)).collect();
+			self.check_exhaustiveness(cases, &final_col_tys, env, span);
+		}
+
+		let ty = match expected_branch_ty {
+			Some(t) => self.subst.apply(&t),
+			None => {
+				self.error("internal error: match produced no type", span);
+				self.fresh()
+			}
+		};
+		TypedExpr::Match(typed_cases, ty)
 	}
 
 	fn infer_literal(&mut self, spanned_lit: &Spanned<Literal>, env: &TypeEnv) -> Ty {
@@ -807,69 +885,6 @@ impl<'r> Checker<'r> {
 
 		self.error(format!("Unbound variable: {}", segments.join(":")), *span);
 		self.fresh()
-	}
-
-	fn infer_match(
-		&mut self,
-		cases: &[(Vec<Spanned<Pattern>>, Spanned<Expr>)],
-		env: &TypeEnv,
-		span: Span,
-	) -> Ty {
-		let mut expected_branch_ty: Option<Ty> = None;
-		// arg types of first case before folded into fn type
-		// after each case unified w/ others, these are authoritative regardless of origin
-		let mut col_tys: Option<Vec<Ty>> = None;
-
-		if cases.is_empty() {
-			self.error("match expression has no cases", span);
-			return self.fresh();
-		}
-
-		for (pats, body) in cases {
-			let mut branch_env = env.clone();
-
-			let mut pat_tys = Vec::new();
-
-			for pat in pats {
-				let ty = self.fresh();
-				branch_env
-					.vars
-					.extend(self.check_pattern(pat, &ty, &branch_env));
-				pat_tys.push(ty);
-			}
-
-			if col_tys.is_none() {
-				col_tys = Some(pat_tys.clone());
-			}
-
-			let mut body_ty = self.infer(body, &branch_env);
-
-			for ty in pat_tys.into_iter().rev() {
-				body_ty = Ty::Fn(Box::new(self.subst.apply(&ty)), Box::new(body_ty));
-			}
-
-			match &expected_branch_ty {
-				Some(expected) => {
-					self.unify(&body_ty, expected, &branch_env, span);
-				}
-				None => {
-					expected_branch_ty = Some(body_ty);
-				}
-			}
-		}
-
-		if let Some(tys) = col_tys {
-			let final_col_tys: Vec<Ty> = tys.iter().map(|t| self.subst.apply(t)).collect();
-			self.check_exhaustiveness(cases, &final_col_tys, env, span);
-		}
-
-		match expected_branch_ty {
-			Some(ty) => self.subst.apply(&ty),
-			None => {
-				self.error("internal error: match produced no type", span);
-				self.fresh()
-			}
-		}
 	}
 
 	// usefulness algorithm
@@ -1207,7 +1222,12 @@ impl<'r> Checker<'r> {
 		self.check_binding_with_tvars_keyed(spanned_binding, env, generalize, extra_tvars, None);
 	}
 
-	fn check_with_clauses(&mut self, with_clauses: &[Spanned<Binding>], env: &TypeEnv) -> TypeEnv {
+	fn check_with_clauses(
+		&mut self,
+		enclosing_qualified: &str,
+		with_clauses: &[Spanned<Binding>],
+		env: &TypeEnv,
+	) -> TypeEnv {
 		let mut with_env = env.clone();
 
 		struct Pending<'a> {
@@ -1236,18 +1256,23 @@ impl<'r> Checker<'r> {
 			wb: &'a Spanned<Binding>,
 			tvars: HashMap<String, Ty>,
 			declared_ty: Ty,
+			typed_value: Option<TypedExpr>,
 		}
 		let mut checked: Vec<Checked> = Vec::with_capacity(pending.len());
 		for p in pending {
-			let inner_env = self.check_with_clauses(&p.wb.item.with_clauses, &with_env);
-			if let Some(body) = &p.wb.item.value {
-				let inferred = self.infer(body, &inner_env);
-				self.unify(&p.declared_ty, &inferred, &with_env, p.wb.span);
-			}
+			let clause_qualified = format!("{}:{}", enclosing_qualified, p.wb.item.name.item);
+			let inner_env =
+				self.check_with_clauses(&clause_qualified, &p.wb.item.with_clauses, &with_env);
+			let typed_value = p.wb.item.value.as_ref().map(|body| {
+				let te = self.annotate(body, &inner_env);
+				self.unify(&p.declared_ty, te.ty(), &with_env, p.wb.span);
+				te
+			});
 			checked.push(Checked {
 				wb: p.wb,
 				tvars: p.tvars,
 				declared_ty: p.declared_ty,
+				typed_value,
 			});
 		}
 
@@ -1271,13 +1296,30 @@ impl<'r> Checker<'r> {
 				}
 			}
 			let scheme = generalise_with_constraints(&env_for_gen, &final_ty, &constraint_map);
-			with_env.insert(b.name.item.clone(), scheme);
+			with_env.insert(b.name.item.clone(), scheme.clone());
+
+			let typed_value = c.typed_value.map(|te| refresh_tys(te, &self.subst));
+			self.typed.push(Spanned {
+				item: TypedBinding {
+					name: b.name.item.clone(),
+					qualified_name: Some(format!("{}:{}", enclosing_qualified, b.name.item)),
+					ty: final_ty,
+					scheme,
+					value: typed_value,
+				},
+				span: c.wb.span,
+			});
 		}
 
 		with_env
 	}
 
-	fn check_binding_group(&mut self, bindings: &[(&Binding, Span)], env: &mut TypeEnv) {
+	fn check_binding_group(
+		&mut self,
+		module_path: &[String],
+		bindings: &[(&Binding, Span)],
+		env: &mut TypeEnv,
+	) {
 		struct Pending<'a> {
 			b: &'a Binding,
 			span: Span,
@@ -1305,20 +1347,32 @@ impl<'r> Checker<'r> {
 
 		struct Checked<'a> {
 			b: &'a Binding,
+			span: Span,
 			tvars: HashMap<String, Ty>,
 			declared_ty: Ty,
+			typed_value: Option<TypedExpr>,
+			qualified: String,
 		}
 		let mut checked: Vec<Checked> = Vec::with_capacity(pending.len());
 		for p in pending {
-			let inner_env = self.check_with_clauses(&p.b.with_clauses, env);
-			if let Some(body) = &p.b.value {
-				let inferred = self.infer(body, &inner_env);
-				self.unify(&p.declared_ty, &inferred, env, p.span);
-			}
+			let qualified = if module_path.is_empty() {
+				p.b.name.item.clone()
+			} else {
+				format!("{}:{}", module_path.join(":"), p.b.name.item)
+			};
+			let inner_env = self.check_with_clauses(&qualified, &p.b.with_clauses, env);
+			let typed_value = p.b.value.as_ref().map(|body| {
+				let te = self.annotate(body, &inner_env);
+				self.unify(&p.declared_ty, te.ty(), env, p.span);
+				te
+			});
 			checked.push(Checked {
 				b: p.b,
+				span: p.span,
 				tvars: p.tvars,
 				declared_ty: p.declared_ty,
+				typed_value,
+				qualified,
 			});
 		}
 
@@ -1341,7 +1395,23 @@ impl<'r> Checker<'r> {
 				}
 			}
 			let scheme = generalise_with_constraints(&env_for_gen, &final_ty, &constraint_map);
-			env.insert(c.b.name.item.clone(), scheme);
+			env.insert(c.b.name.item.clone(), scheme.clone());
+
+			let typed_value = c.typed_value.map(|te| refresh_tys(te, &self.subst));
+			self.typed.push(Spanned {
+				item: TypedBinding {
+					name: c.b.name.item.clone(),
+					qualified_name: if module_path.is_empty() {
+						None
+					} else {
+						Some(c.qualified)
+					},
+					ty: final_ty,
+					scheme,
+					value: typed_value,
+				},
+				span: c.span,
+			});
 		}
 	}
 
@@ -1374,12 +1444,17 @@ impl<'r> Checker<'r> {
 			with_env.insert(binding.name.item.clone(), Scheme::mono(declared_ty.clone()));
 		}
 
-		let with_env = self.check_with_clauses(&binding.with_clauses, &with_env);
+		let enclosing_qualified = register_key
+			.clone()
+			.unwrap_or_else(|| binding.name.item.clone());
+		let with_env =
+			self.check_with_clauses(&enclosing_qualified, &binding.with_clauses, &with_env);
 
-		if let Some(body) = &binding.value {
-			let inferred = self.infer(body, &with_env);
-			self.unify(&declared_ty, &inferred, env, *span);
-		}
+		let typed_value = binding.value.as_ref().map(|body| {
+			let te = self.annotate(body, &with_env);
+			self.unify(&declared_ty, te.ty(), env, *span);
+			te
+		});
 		// extern body -- just trust the annotation
 
 		let final_ty = self.subst.apply(&declared_ty);
@@ -1403,8 +1478,20 @@ impl<'r> Checker<'r> {
 
 			generalise_with_constraints(&env_for_gen, &final_ty, &constraint_map)
 		} else {
-			Scheme::mono(final_ty)
+			Scheme::mono(final_ty.clone())
 		};
+
+		let typed_value = typed_value.map(|te| refresh_tys(te, &self.subst));
+		self.typed.push(Spanned {
+			item: TypedBinding {
+				name: binding.name.item.clone(),
+				qualified_name: register_key.clone(),
+				ty: final_ty,
+				scheme: scheme.clone(),
+				value: typed_value,
+			},
+			span: *span,
+		});
 
 		match register_key {
 			Some(key) => {
@@ -1759,7 +1846,7 @@ fn collect_top_level_in(
 				})
 				.collect();
 			for scc in scc_order(&group) {
-				checker.check_binding_group(&scc, &mut local_env);
+				checker.check_binding_group(&path, &scc, &mut local_env);
 			}
 
 			for (local_key, scheme) in &local_env.vars {
@@ -2095,100 +2182,6 @@ pub struct TypedModule {
 	pub submodules: Vec<TypedModule>,
 }
 
-pub fn annotate_expr(
-	spanned_expr: &Spanned<Expr>,
-	env: &TypeEnv,
-	checker: &mut Checker<'_>,
-) -> TypedExpr {
-	let Spanned { item: expr, span } = spanned_expr;
-	match expr {
-		Expr::Literal(lit) => {
-			let ty = checker.infer_literal(
-				&Spanned {
-					item: lit.clone(),
-					span: *span,
-				},
-				env,
-			);
-			TypedExpr::Literal(lit.clone(), checker.subst.apply(&ty))
-		}
-		Expr::Qualified(q) => {
-			let ty = checker.infer_qualified(
-				&Spanned {
-					item: q.clone(),
-					span: *span,
-				},
-				env,
-			);
-			TypedExpr::Var(q.0.clone(), checker.subst.apply(&ty))
-		}
-		Expr::Fn(arg, body) => {
-			let arg_ty = checker.fresh();
-			let mut env2 = env.clone();
-			env2.insert(arg.item.clone(), Scheme::mono(arg_ty.clone()));
-			let body_expr = annotate_expr(body, &env2, checker);
-			let fn_ty = Ty::Fn(
-				Box::new(checker.subst.apply(&arg_ty)),
-				Box::new(body_expr.ty().clone()),
-			);
-			TypedExpr::Fn(arg.item.clone(), Box::new(body_expr), fn_ty)
-		}
-		Expr::App(func, arg) => {
-			let func_expr = annotate_expr(func, env, checker);
-			let arg_expr = annotate_expr(arg, env, checker);
-			let ret = checker.fresh();
-			let expected_fn = Ty::Fn(Box::new(arg_expr.ty().clone()), Box::new(ret.clone()));
-			checker.unify(func_expr.ty(), &expected_fn, env, *span);
-			let ty = checker.subst.apply(&ret);
-			TypedExpr::App(Box::new(func_expr), Box::new(arg_expr), ty)
-		}
-		Expr::Product(a, b) => {
-			let ae = annotate_expr(a, env, checker);
-			let be = annotate_expr(b, env, checker);
-			let ty = Ty::Product(Box::new(ae.ty().clone()), Box::new(be.ty().clone()));
-			TypedExpr::Product(Box::new(ae), Box::new(be), ty)
-		}
-		Expr::Match(cases) => {
-			let ty = checker.infer_match(cases, env, *span);
-			TypedExpr::Match(
-				cases
-					.iter()
-					.map(|(pats, body)| {
-						let mut branch_env = env.clone();
-						// tie each pat to match's col type, so vars binded
-						// share tvars with enclosing fn instead of being fresh
-						let mut cur = checker.subst.apply(&ty);
-						for pat in pats {
-							let pat_ty = match cur.clone() {
-								Ty::Fn(a, b) => {
-									cur = *b;
-									*a
-								}
-								_ => checker.fresh(),
-							};
-							branch_env.vars.extend(checker.check_pattern(
-								pat,
-								&pat_ty,
-								&branch_env,
-							));
-						}
-						let body_e = annotate_expr(body, &branch_env, checker);
-						checker.unify(body_e.ty(), &cur, &branch_env, body.span);
-						(
-							pats.iter()
-								.map(|Spanned { item, .. }| item)
-								.cloned()
-								.collect(),
-							body_e,
-						)
-					})
-					.collect(),
-				checker.subst.apply(&ty),
-			)
-		}
-	}
-}
-
 pub fn refresh_tys(te: TypedExpr, subst: &Subst) -> TypedExpr {
 	match te {
 		TypedExpr::Literal(lit, ty) => TypedExpr::Literal(lit, subst.apply(&ty)),
@@ -2231,9 +2224,13 @@ pub fn typecheck(
 
 	collect_program(program, &mut env, &mut checker);
 
-	checker.suppress_errors = true;
-	let typed = build_typed_bindings(program, &env, &mut checker);
-	checker.suppress_errors = false;
+	// The checking order differs from source order (instances before a module's
+	// bindings, bindings in dependency order). Restore program order -- prelude
+	// first, then each file -- so everything downstream sees what it used to.
+	// Bindings nested in another (with-clauses) end before it, so they still
+	// come first. The sort is stable.
+	let mut typed = std::mem::take(&mut checker.typed);
+	typed.sort_by_key(|b| (b.span.source_id, b.span.end));
 
 	let diags = std::mem::take(&mut checker.diags);
 	(env, typed, diags)
@@ -2381,230 +2378,6 @@ fn forward_declare_tl_in(
 				env.insert(method.item.name.item.clone(), scheme);
 				env.class_methods
 					.insert(method.item.name.item.clone(), name.item.clone());
-			}
-		}
-		_ => {}
-	}
-}
-
-fn build_typed_bindings(
-	program: &Spanned<Program>,
-	env: &TypeEnv,
-	checker: &mut Checker<'_>,
-) -> Vec<Spanned<TypedBinding>> {
-	let mut result = Vec::new();
-	for spanned in &program.item.0 {
-		collect_typed_tl(spanned, env, checker, &mut result, &[]);
-	}
-	result
-}
-
-fn annotate_with_clauses(
-	enclosing_qualified: &str,
-	with_clauses: &[Spanned<Binding>],
-	env: &TypeEnv,
-	checker: &mut Checker<'_>,
-	out: &mut Vec<Spanned<TypedBinding>>,
-) -> TypeEnv {
-	let mut with_env = env.clone();
-
-	struct Pending<'a> {
-		wb: &'a Spanned<Binding>,
-		tvars: HashMap<String, Ty>,
-		declared_ty: Ty,
-	}
-	let mut pending: Vec<Pending> = Vec::with_capacity(with_clauses.len());
-	for wb in with_clauses {
-		let mut tvars: HashMap<String, Ty> = HashMap::new();
-		for constraint in &wb.item.constraints {
-			tvars
-				.entry(constraint.item.type_var.item.clone())
-				.or_insert_with(|| checker.fresh());
-		}
-		let declared_ty = checker.ast_type_to_ty(&wb.item.typ, &mut tvars, &with_env);
-		with_env.insert(wb.item.name.item.clone(), Scheme::mono(declared_ty.clone()));
-		pending.push(Pending {
-			wb,
-			tvars,
-			declared_ty,
-		});
-	}
-
-	struct Checked<'a> {
-		wb: &'a Spanned<Binding>,
-		tvars: HashMap<String, Ty>,
-		declared_ty: Ty,
-		typed_value: Option<TypedExpr>,
-	}
-	let mut checked: Vec<Checked> = Vec::with_capacity(pending.len());
-	for p in pending {
-		let clause_qualified = format!("{}:{}", enclosing_qualified, p.wb.item.name.item);
-		let inner_env = annotate_with_clauses(
-			&clause_qualified,
-			&p.wb.item.with_clauses,
-			&with_env,
-			checker,
-			out,
-		);
-		let typed_value = p.wb.item.value.as_ref().map(|v| {
-			let te = annotate_expr(v, &inner_env, checker);
-			checker.unify(&p.declared_ty, te.ty(), &with_env, v.span);
-			te
-		});
-		checked.push(Checked {
-			wb: p.wb,
-			tvars: p.tvars,
-			declared_ty: p.declared_ty,
-			typed_value,
-		});
-	}
-
-	for c in checked {
-		let b = &c.wb.item;
-		let typed_value = c.typed_value.map(|te| refresh_tys(te, &checker.subst));
-		let final_ty = checker.subst.apply(&c.declared_ty);
-
-		let mut env_for_gen = with_env.clone();
-		env_for_gen.vars.remove(&b.name.item);
-		let mut constraint_map: HashMap<u32, Vec<String>> = HashMap::new();
-		for constraint in &b.constraints {
-			if let Some(tv) = c.tvars.get(&constraint.item.type_var.item) {
-				if let Ty::Var(id) = checker.subst.apply(tv) {
-					let classes = constraint_map.entry(id).or_default();
-					for class_name in &constraint.item.class_names {
-						if !classes.contains(&class_name.item) {
-							classes.push(class_name.item.clone());
-						}
-					}
-				}
-			}
-		}
-		let scheme = generalise_with_constraints(&env_for_gen, &final_ty, &constraint_map);
-
-		with_env.insert(b.name.item.clone(), scheme.clone());
-
-		let clause_qualified = format!("{}:{}", enclosing_qualified, b.name.item);
-		out.push(Spanned {
-			item: TypedBinding {
-				name: b.name.item.clone(),
-				qualified_name: Some(clause_qualified),
-				ty: final_ty,
-				scheme,
-				value: typed_value,
-			},
-			span: c.wb.span,
-		});
-	}
-
-	with_env
-}
-
-fn collect_typed_tl(
-	spanned_tl: &Spanned<TopLevel>,
-	env: &TypeEnv,
-	checker: &mut Checker<'_>,
-	out: &mut Vec<Spanned<TypedBinding>>,
-	module_path: &[String],
-) {
-	let Spanned { item: tl, span } = spanned_tl;
-	match tl {
-		TopLevel::Module(mod_name, body) => {
-			// should probably just store module-local view but whatever
-			let mut path = module_path.to_vec();
-			path.push(mod_name.item.clone());
-			let prefix = format!("{}:", path.join(":"));
-
-			let mut local_env = env.clone();
-			for (k, v) in &env.vars {
-				if let Some(bare) = k.strip_prefix(prefix.as_str()) {
-					local_env.vars.insert(bare.to_string(), v.clone());
-				}
-			}
-
-			for item in body {
-				collect_typed_tl(item, &local_env, checker, out, &path);
-			}
-		}
-		TopLevel::Binding(b) => {
-			let scheme = env
-				.vars
-				.get(&b.name.item)
-				.cloned()
-				.unwrap_or_else(|| Scheme::mono(checker.fresh()));
-			let ty = checker.instantiate(&scheme);
-			let qualified_name = if module_path.is_empty() {
-				None
-			} else {
-				Some(format!("{}:{}", module_path.join(":"), b.name.item))
-			};
-			let enclosing_qualified = qualified_name
-				.clone()
-				.unwrap_or_else(|| b.name.item.clone());
-			let with_env =
-				annotate_with_clauses(&enclosing_qualified, &b.with_clauses, env, checker, out);
-			let typed_value = b.value.as_ref().map(|v| {
-				let te = annotate_expr(v, &with_env, checker);
-				checker.unify(&ty, te.ty(), &with_env, v.span);
-				te
-			});
-			let typed_value = typed_value.map(|te| refresh_tys(te, &checker.subst));
-			out.push(Spanned {
-				item: TypedBinding {
-					name: b.name.item.clone(),
-					qualified_name,
-					ty: checker.subst.apply(&ty),
-					scheme: checker.subst.apply_scheme(&scheme),
-					value: typed_value,
-				},
-				span: *span,
-			});
-		}
-		TopLevel::Instance(_, type_args, bindings) => {
-			let mut inst_tvars: HashMap<String, Ty> = HashMap::new();
-			for arg in type_args {
-				collect_free_type_vars(arg, &mut inst_tvars, env, checker);
-			}
-			let inst_ty = type_args
-				.first()
-				.map(|first| checker.ast_type_to_ty(first, &mut inst_tvars.clone(), env));
-
-			for b in bindings {
-				let qualified_key = inst_ty
-					.as_ref()
-					.map(|ty| instance_method_key(ty, &b.item.name.item));
-				let scheme = qualified_key
-					.as_ref()
-					.and_then(|k| env.instance_methods.get(k))
-					.or_else(|| env.vars.get(&b.item.name.item))
-					.cloned()
-					.unwrap_or_else(|| Scheme::mono(checker.fresh()));
-				let ty = checker.instantiate(&scheme);
-				let enclosing_qualified = qualified_key
-					.clone()
-					.unwrap_or_else(|| b.item.name.item.clone());
-				let with_env = annotate_with_clauses(
-					&enclosing_qualified,
-					&b.item.with_clauses,
-					env,
-					checker,
-					out,
-				);
-				let typed_value = b.item.value.as_ref().map(|v| {
-					let te = annotate_expr(v, &with_env, checker);
-					checker.unify(&ty, te.ty(), &with_env, v.span);
-					te
-				});
-				let typed_value = typed_value.map(|te| refresh_tys(te, &checker.subst));
-				out.push(Spanned {
-					item: TypedBinding {
-						name: b.item.name.item.clone(),
-						qualified_name: qualified_key,
-						ty: checker.subst.apply(&ty),
-						scheme: checker.subst.apply_scheme(&scheme),
-						value: typed_value,
-					},
-					span: *span,
-				});
 			}
 		}
 		_ => {}
