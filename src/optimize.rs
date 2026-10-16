@@ -448,7 +448,7 @@ fn fold_intrinsic(op: Intrinsic, args: &[Atom], lang: &Lang) -> Option<Folded> {
 			Some(Folded::Lit(Literal::Int(a.wrapping_mul(*c))))
 		}
 		(IDiv, [Literal::Int(a), Literal::Int(c)]) if *c != 0 => {
-			Some(Folded::Lit(Literal::Int(a.wrapping_div(*c))))
+			Some(Folded::Lit(Literal::Int(a.wrapping_div_euclid(*c))))
 		}
 		(IMod, [Literal::Int(a), Literal::Int(c)]) if *c != 0 => {
 			Some(Folded::Lit(Literal::Int(a.wrapping_rem_euclid(*c))))

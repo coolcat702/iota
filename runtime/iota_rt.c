@@ -14,20 +14,31 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <time.h>
+#include <sys/resource.h>
 
 /* The generated code stores a constructor tag in the low bits of heap pointers, so
  * every object must be 16-byte aligned (malloc guarantees alignof(max_align_t)). */
+static uint64_t st_allocs, st_bytes, st_frees, st_live, st_peak;
+static struct timespec st_start;
+
 void *rt_alloc(uint64_t n) {
 	void *p = malloc(n ? n : 16);
 	if (!p) {
 		fputs("iota: out of memory\n", stderr);
 		exit(101);
 	}
+	st_allocs++;
+	st_bytes += n;
+	if (++st_live > st_peak) st_peak = st_live;
 	return p;
 }
 void rt_free(void *p) {
+	st_frees++;
+	st_live--;
 	free(p);
 }
+
 uint32_t *rt_buf_alloc(uint64_t n) {
 	return (uint32_t *)rt_alloc((n ? n : 1) * sizeof(uint32_t));
 }
@@ -39,24 +50,19 @@ void rt_fail(const char *msg) {
 	exit(102);
 }
 
-/* Int: div truncates; mod is Euclidean (always >= 0 for a positive divisor).
+/* div, mod are Euclidean
  * This matches the constant folder in optimize.rs, so
  * a folded and an unfolded computation can never disagree. */
 int32_t rt_idiv(int32_t a, int32_t b) {
-	if (b == 0) {
-		fflush(stdout);
-		fputs("iota: runtime error: division by zero\n", stderr);
-		exit(104);
-	}
+	if (b == 0) return 0;
 	if (b == -1) return (int32_t)(0u - (uint32_t)a); /* avoids INT_MIN / -1 trap */
-	return a / b;
+	int q = a / b;
+	int r = a % b;
+	if (r < 0) q += (b < 0) ? 1 : -1;
+	return q;
 }
 int32_t rt_imod(int32_t a, int32_t b) {
-	if (b == 0) {
-		fflush(stdout);
-		fputs("iota: runtime error: modulo by zero\n", stderr);
-		exit(104);
-	}
+	if (b == 0) return 0;
 	if (b == -1) return 0;
 	int32_t r = a % b;
 	if (r < 0) r += (b < 0 ? -b : b);
@@ -129,8 +135,8 @@ void rt_sb_push(StrBuf *b, uint32_t c) {
 void rt_print_sb(StrBuf *b, int32_t newline) {
 	for (uint64_t i = 0; i < b->len; i++) put_utf8(b->data[i]);
 	if (newline) putchar('\n');
-	free(b->data);
-	free(b);
+	rt_free(b->data);
+	rt_free(b);
 }
 
 /* One line from stdin without the newline.
@@ -179,7 +185,7 @@ uint32_t *rt_getln(uint64_t *len) {
 		for (int k = 0; k < extra && i < n; k++, i++) cp = (cp << 6) | (line[i] & 0x3F);
 		out[m++] = cp;
 	}
-	free(line);
+	rt_free(line);
 	*len = m;
 	return out;
 }
@@ -206,12 +212,76 @@ static void run_program(void) {
 	fflush(stdout);
 }
 
-static void on_segv(int sig) {
-	(void)sig;
-	static const char msg[] = "iota: runtime error: stack overflow (raise it with IOTA_STACK_MB)\n";
-	ssize_t r = write(2, msg, sizeof msg - 1);
+/* program's stack: [prog_lo, prog_lo + prog_size), low `prog_guard` bytes protected */
+static uintptr_t prog_lo, prog_size, prog_guard;
+static volatile sig_atomic_t in_fault;
+
+#define WR(lit) do { ssize_t r_ = write(2, lit, sizeof lit - 1); (void)r_; } while (0)
+
+static void wr_hex(uintptr_t v) {
+	char buf[2 + 2 * sizeof(uintptr_t)];
+	size_t i = sizeof buf;
+	do {
+		buf[--i] = "0123456789abcdef"[v & 15];
+		v >>= 4;
+	} while (v);
+	buf[--i] = 'x';
+	buf[--i] = '0';
+	ssize_t r = write(2, buf + i, sizeof buf - i);
 	(void)r;
-	_exit(103);
+}
+
+/* A frame bigger than the guard can jump over it and fault below the mapping;
+ * treat that much of the space under the stack as "still an overflow". */
+#define OVERSHOOT ((uintptr_t)1 << 20)
+
+static void on_fault(int sig, siginfo_t *si, void *ctx) {
+	(void)ctx;
+	if (in_fault) _exit(105); /* a fault inside the handler: give up immediately */
+	in_fault = 1;
+	/* keep what the program already printed (rt_fail does the same). stdio is
+	 * normally not mid-operation here: overflow happens in generated code. */
+	fflush(stdout);
+
+	uintptr_t a = (uintptr_t)si->si_addr;
+	if (prog_guard && a + OVERSHOOT >= prog_lo && a < prog_lo + prog_guard) {
+		WR("iota: runtime error: stack overflow (raise it with IOTA_STACK_MB)\n");
+		_exit(103);
+	}
+	if (prog_size && a >= prog_lo + prog_guard && a < prog_lo + prog_size) {
+		WR("iota: runtime error: could not grow the stack (out of memory?)\n");
+		_exit(101);
+	}
+	WR("iota: internal error: ");
+	if (sig == SIGBUS) {
+		WR("bus error");
+	} else {
+		WR("segmentation fault");
+	};
+	WR(" at address ");
+	wr_hex(a);
+	WR("\n  this is a bug in the Iota compiler or runtime, not in your program\n");
+	WR("  (IOTA_NO_SEGV_HANDLER=1 disables this handler: core dump / debugger)\n");
+	_exit(105);
+}
+
+static void print_stats(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	struct rusage ru;
+	getrusage(RUSAGE_SELF, &ru);
+	double wall = (double)(now.tv_sec - st_start.tv_sec) + (double)(now.tv_nsec - st_start.tv_nsec) / 1e9;
+	double user = (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec / 1e6;
+	double sys = (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec / 1e6;
+#ifdef __APPLE__
+	double rss_mb = (double)ru.ru_maxrss / 1048576.0; /* bytes on macOS */
+#else
+	double rss_mb = (double)ru.ru_maxrss / 1024.0; /* kilobytes on Linux */
+#endif
+	fprintf(stderr,
+		"[iota] allocs=%" PRIu64 " (%.1f MB) frees=%" PRIu64 " peak_live=%" PRIu64
+		" wall=%.3fs user=%.3fs sys=%.3fs maxrss=%.1fMB\n",
+		st_allocs, (double)st_bytes / 1048576.0, st_frees, st_peak, wall, user, sys, rss_mb);
 }
 
 int main(void) {
@@ -227,12 +297,15 @@ int main(void) {
 	ss.ss_size = alt_size;
 	ss.ss_flags = 0;
 	sigaltstack(&ss, NULL);
-	struct sigaction sa;
-	memset(&sa, 0, sizeof sa);
-	sa.sa_handler = on_segv;
-	sa.sa_flags = SA_ONSTACK;
-	sigemptyset(&sa.sa_mask);
-	sigaction(SIGSEGV, &sa, NULL);
+	if (!getenv("IOTA_NO_SEGV_HANDLER")) {
+		struct sigaction sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sa_sigaction = on_fault;
+		sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGSEGV, &sa, NULL);
+		sigaction(SIGBUS, &sa, NULL);
+	}
 
 	void *stack = MAP_FAILED;
 	size_t size = 0;
@@ -244,6 +317,28 @@ int main(void) {
 		fputs("iota: cannot reserve a stack for the program\n", stderr);
 		return 104;
 	}
+
+	/* guard region at the low end: PROT_NONE costs nothing (never committed) */
+	size_t guard = (size_t)1 << 20;
+	if (guard > size / 4) guard = size / 4;
+	if (mprotect(stack, guard, PROT_NONE) != 0) guard = 0; /* no guard: do not claim overflows */
+	prog_lo = (uintptr_t)stack;
+	prog_size = size;
+	prog_guard = guard;
+
+	getcontext(&prog_ctx);
+	prog_ctx.uc_stack.ss_sp = (char *)stack + guard;
+	prog_ctx.uc_stack.ss_size = size - guard;
+	prog_ctx.uc_link = &main_ctx;
+	makecontext(&prog_ctx, run_program, 0);
+	swapcontext(&main_ctx, &prog_ctx);
+	return exit_status;
+
+	if (getenv("IOTA_STATS")) {
+		clock_gettime(CLOCK_MONOTONIC, &st_start);
+		atexit(print_stats);
+	}
+
 	getcontext(&prog_ctx);
 	prog_ctx.uc_stack.ss_sp = stack;
 	prog_ctx.uc_stack.ss_size = size;
