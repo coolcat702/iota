@@ -1161,6 +1161,13 @@ impl<'l> Lowerer<'l> {
 					.and_then(|t| self.type_ctor_names.get(t))
 					.map_or(false, |cs| cs.len() == keys.len()));
 		if !exhaustive {
+			// if exactly one ctor missing, just name it instead of `_`
+			// removes a redundant case
+			let missing = if all_ctors && !keys.is_empty() {
+				self.single_missing_ctor(&keys, type_name.as_deref(), lname, rname)
+			} else {
+				None
+			};
 			let mut new_cols = cols.clone();
 			new_cols.remove(j);
 			let mut new_rows = Vec::new();
@@ -1173,11 +1180,41 @@ impl<'l> Lowerer<'l> {
 			}
 			let body = self.compile_match(new_cols, new_rows, ret_ty);
 			arms.push(Arm {
-				pat: CasePat::Wild,
+				pat: match missing {
+					Some(c) => CasePat::Ctor(c),
+					None => CasePat::Wild,
+				},
 				body,
 			});
 		}
 		Expr::Case(Atom::Var(col.var), arms)
+	}
+
+	fn single_missing_ctor(
+		&self,
+		keys: &[(String, Head)],
+		type_name: Option<&str>,
+		lname: &str,
+		rname: &str,
+	) -> Option<String> {
+		let present = |canon: &str| keys.iter().any(|(k, _)| *k == format!("c:{}", canon));
+
+		// anonymous sum: only one of the two sides was matched
+		let (pl, pr) = (present(lname), present(rname));
+		if pl != pr {
+			return Some(if pl { rname } else { lname }.to_string());
+		}
+
+		let t = type_name?;
+		let all = self.type_ctor_names.get(t)?;
+		let missing: Vec<&String> = all
+			.iter()
+			.filter(|c| !present(&format!("{}:{}", t, c)))
+			.collect();
+		match missing.as_slice() {
+			[one] => Some(format!("{}:{}", t, one)),
+			_ => None,
+		}
 	}
 
 	// ---- top-level bindings --------------------------------------------------

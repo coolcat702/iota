@@ -68,6 +68,7 @@ end
 Define a function using the type `T -> U`. A function value is defined with `fn x -> M end`.
 
 ```iota
+# Let f = λx.M
 let f
     : Int -> Int
     = fn x -> mul 2 x end
