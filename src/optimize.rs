@@ -1,6 +1,6 @@
 // Optimization + partial evaluation of ANF IR
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -10,6 +10,7 @@ use crate::ir::{
 	Value,
 };
 use crate::lang::{Intrinsic, Lang, LangItem};
+use crate::lift_spec::{collect_fn_tys, lambda_lift, specialize_hof};
 use crate::parser::Literal;
 use crate::typechecker::Ty;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
@@ -38,47 +39,26 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 		.iter()
 		.map(|e| (e.name.clone(), (e.arity, e.intrinsic)))
 		.collect();
-
 	let counter = Cell::new(0u64);
+
 	if mode == OptimizeMode::Aggressive {
 		raise_arity(program, &externs, &counter);
 	}
-	let recursive = recursive_set(program);
-	let mut funcs: HashMap<String, Rc<Function>> = program
-		.functions
-		.iter()
-		.map(|f| (f.name.clone(), Rc::new(f.clone())))
-		.collect();
-	let budget = Cell::new(0usize);
-	let sweeps = if mode == OptimizeMode::Aggressive {
-		2
-	} else {
-		1
-	};
+	run_sweeps(program, mode, lang, &externs, &counter, 2);
 
-	for _ in 0..sweeps {
-		for i in 0..program.functions.len() {
-			let name = program.functions[i].name.clone();
-			let current = funcs[&name].clone();
-			let optimized = {
-				let cx = Cx {
-					funcs: &funcs,
-					externs: &externs,
-					lang,
-					recursive: &recursive,
-					inline: mode == OptimizeMode::Aggressive,
-					counter: &counter,
-					budget: &budget,
-					changed: Cell::new(false),
-					in_try: Cell::new(0),
-				};
-				cx.optimize_function(&current)
-			};
-			funcs.insert(name, Rc::new(optimized));
+	if mode == OptimizeMode::Aggressive {
+		// Closures that survived the sweeps (they escape into higher-order
+		// functions or are join points) become top-level functions + paps.
+		// recursive HOFs are then specialized on them. one more sweep inlines
+		// the now-known functions into the specialized loops.
+		for _round in 0..3 {
+			let lifted = !disabled("lift") && lambda_lift(program, &counter);
+			let specialized = !disabled("spec") && specialize_hof(program, &counter);
+			if !lifted && !specialized {
+				break;
+			}
+			run_sweeps(program, mode, lang, &externs, &counter, 1);
 		}
-	}
-	for f in &mut program.functions {
-		*f = (*funcs[&f.name]).clone();
 	}
 
 	if std::env::var_os("IOTA_OPT_STATS").is_some() {
@@ -89,6 +69,51 @@ pub fn optimize(program: &mut IrProgram, mode: OptimizeMode, lang: &Lang) {
 			WASTED.load(Relaxed),
 			counter.get()
 		);
+	}
+}
+
+fn run_sweeps(
+	program: &mut IrProgram,
+	mode: OptimizeMode,
+	lang: &Lang,
+	externs: &HashMap<String, (usize, Option<Intrinsic>)>,
+	counter: &Cell<u64>,
+	sweeps: usize,
+) {
+	let recursive = recursive_set(program);
+	let single = single_site_set(program, &recursive);
+	let mut funcs: HashMap<String, Rc<Function>> = program
+		.functions
+		.iter()
+		.map(|f| (f.name.clone(), Rc::new(f.clone())))
+		.collect();
+	let budget = Cell::new(0usize);
+
+	for _ in 0..sweeps {
+		for i in 0..program.functions.len() {
+			let name = program.functions[i].name.clone();
+			let current = funcs[&name].clone();
+			let optimized = {
+				let cx = Cx {
+					funcs: &funcs,
+					externs,
+					lang,
+					recursive: &recursive,
+					single: &single,
+					inline: mode == OptimizeMode::Aggressive,
+					counter,
+					budget: &budget,
+					changed: Cell::new(false),
+					in_try: Cell::new(0),
+					var_tys: RefCell::new(HashMap::new()),
+				};
+				cx.optimize_function(&current)
+			};
+			funcs.insert(name, Rc::new(optimized));
+		}
+	}
+	for f in &mut program.functions {
+		*f = (*funcs[&f.name]).clone();
 	}
 }
 
@@ -144,6 +169,8 @@ struct Cx<'a> {
 	budget: &'a Cell<usize>,
 	changed: Cell<bool>,
 	in_try: Cell<usize>,
+	single: &'a HashSet<String>,
+	var_tys: RefCell<HashMap<String, Ty>>,
 }
 
 const SMALL_INLINE: usize = 24;
@@ -152,10 +179,62 @@ const MAX_DEPTH: usize = 6;
 const MAX_FUNCTION_SIZE: usize = 5_000;
 const TAIL_INLINE_MAX: usize = 48;
 const FUNCTION_BUDGET: usize = 6_000;
+const MAX_DUP_ARMS: usize = 4;
 
 type Binds = Vec<(Name, Ty, Value)>;
 
-fn flatten(e: Expr) -> (Binds, Expr) {
+// name an expression returns, if it just returns a var
+fn tail_var(e: &Expr) -> Option<&Name> {
+	let mut cur = e;
+	loop {
+		match cur {
+			Expr::Let(_, _, _, rest) => cur = &**rest,
+			Expr::Halt(Atom::Var(n)) => return Some(n),
+			_ => return None,
+		}
+	}
+}
+
+fn rename_var_atom(a: &mut Atom, from: &str, to: &str) {
+	if let Atom::Var(n) = a {
+		if n == from {
+			*n = to.to_string();
+		}
+	}
+}
+
+fn rename_var_value(v: &mut Value, from: &str, to: &str) {
+	match v {
+		Value::Atom(a) | Value::Proj(a, _) | Value::Unwrap(a) => rename_var_atom(a, from, to),
+		Value::App(a, b) | Value::Pair(a, b) => {
+			rename_var_atom(a, from, to);
+			rename_var_atom(b, from, to);
+		}
+		Value::Ctor(_, Some(a)) => rename_var_atom(a, from, to),
+		Value::Ctor(_, None) | Value::Str(_) | Value::Fail(_) => {}
+		Value::Lambda(_, _, body) => rename_var_in(body, from, to),
+	}
+}
+
+// replace the free variable `from` by `to` (names are unique per function, so
+// nothing can be captured)
+fn rename_var_in(e: &mut Expr, from: &str, to: &str) {
+	match e {
+		Expr::Halt(a) => rename_var_atom(a, from, to),
+		Expr::Case(s, arms) => {
+			rename_var_atom(s, from, to);
+			for arm in arms {
+				rename_var_in(&mut arm.body, from, to);
+			}
+		}
+		Expr::Let(_, _, v, rest) => {
+			rename_var_value(v, from, to);
+			rename_var_in(rest, from, to);
+		}
+	}
+}
+
+pub(crate) fn flatten(e: Expr) -> (Binds, Expr) {
 	let mut binds = Vec::new();
 	let mut cur = e;
 	loop {
@@ -169,7 +248,7 @@ fn flatten(e: Expr) -> (Binds, Expr) {
 	}
 }
 
-fn rebuild(binds: Binds, tail: Expr) -> Expr {
+pub(crate) fn rebuild(binds: Binds, tail: Expr) -> Expr {
 	let mut e = tail;
 	for (x, t, v) in binds.into_iter().rev() {
 		e = Expr::Let(x, t, v, Box::new(e));
@@ -267,7 +346,7 @@ fn value_vars(v: &Value) -> HashSet<String> {
 	out
 }
 
-fn expr_vars(e: &Expr) -> HashSet<String> {
+pub(crate) fn expr_vars(e: &Expr) -> HashSet<String> {
 	match e {
 		Expr::Halt(a) => {
 			let mut s = HashSet::new();
@@ -335,7 +414,7 @@ fn ends_in_case(e: &Expr) -> bool {
 	}
 }
 
-fn expr_size(e: &Expr) -> usize {
+pub(crate) fn expr_size(e: &Expr) -> usize {
 	match e {
 		Expr::Halt(_) => 0,
 		Expr::Case(_, arms) => 1 + arms.iter().map(|a| expr_size(&a.body)).sum::<usize>(),
@@ -430,7 +509,7 @@ fn can_reduce(callee: &Function, args: &[Atom], facts: &FactMap) -> bool {
 			}
 			Expr::Case(Atom::Var(s), _) => return !unknown.contains(s.as_str()),
 			Expr::Case(Atom::Lit(_), _) => return true,
-			Expr::Case(..) => return false, // Global / Method scrutinee is never resolved
+			Expr::Case(..) => return false, // Global / Method scrutinee never resolved
 			Expr::Halt(_) => return true,
 		}
 	}
@@ -503,6 +582,7 @@ impl<'a> Cx<'a> {
 	}
 
 	fn optimize_function(&self, f: &Function) -> Function {
+		*self.var_tys.borrow_mut() = collect_fn_tys(f);
 		self.budget.set(FUNCTION_BUDGET);
 		let mut body = f.body.clone();
 		let limit = MAX_FUNCTION_SIZE.max(expr_size(&body) * 4);
@@ -641,8 +721,10 @@ impl<'a> Cx<'a> {
 				tail = new_tail;
 				self.changed.set(true);
 			}
+			self.case_of_case(&mut kept, &mut tail, &facts, depth, owner);
 		}
 		let (kept, tail) = self.float_in(kept, tail);
+
 		rebuild(kept, tail)
 	}
 
@@ -682,10 +764,13 @@ impl<'a> Cx<'a> {
 			return None;
 		}
 		let size = expr_size(&callee.body);
-		if size > TAIL_INLINE_MAX || self.budget.get() < size + 1 {
-			return None;
+		if !self.single.contains(&name) {
+			if size > TAIL_INLINE_MAX || self.budget.get() < size + 1 {
+				return None;
+			}
+			self.budget.set(self.budget.get() - (size + 1));
 		}
-		self.budget.set(self.budget.get() - (size + 1));
+
 		let mut map = SubstMap::new();
 		for ((p, _), a) in callee.params.iter().zip(args.iter()) {
 			map.insert(p.clone(), a.clone());
@@ -701,42 +786,64 @@ impl<'a> Cx<'a> {
 		};
 		let mut scrut_vars = HashSet::new();
 		atom_vars(&scrut, &mut scrut_vars);
-		// free variables of each arm, kept current as bindings are moved in
+		// free variables of each arm, kept current as bindings move in
 		let mut arm_vars: Vec<HashSet<String>> = arms.iter().map(|a| expr_vars(&a.body)).collect();
 		// variables used by the bindings after position i that stay in `kept`
 		let mut later: HashSet<String> = HashSet::new();
+		// operands of bindings that were copied into several arms
+		let mut wanted: HashSet<String> = HashSet::new();
+		let allow_dup = !disabled("dup");
 
 		let mut i = kept.len();
 		while i > 0 {
 			i -= 1;
 			let x = kept[i].0.clone();
-			let mut target = None;
+			let mut targets: Vec<usize> = Vec::new();
 			if !scrut_vars.contains(&x) && !later.contains(&x) {
-				let mut using = arm_vars
+				targets = arm_vars
 					.iter()
 					.enumerate()
 					.filter(|(_, s)| s.contains(&x))
-					.map(|(k, _)| k);
-				// move only if exactly one arm uses it
-				if let (Some(k), None) = (using.next(), using.next()) {
-					target = Some(k);
+					.map(|(k, _)| k)
+					.collect();
+				if targets.len() > 1 {
+					let dup_ok = allow_dup
+						&& targets.len() <= MAX_DUP_ARMS
+						&& !matches!(kept[i].2, Value::Lambda(..) | Value::Fail(_))
+						&& (wanted.contains(&x)
+							|| targets.iter().any(|&k| tail_var(&arms[k].body) == Some(&x)));
+					if !dup_ok {
+						targets.clear();
+					}
 				}
 			}
-			match target {
-				Some(k) => {
-					let (x, t, v) = kept.remove(i);
-					let vv = value_vars(&v);
-					arm_vars[k].remove(&x);
-					arm_vars[k].extend(vv);
-					let body = std::mem::replace(
-						&mut arms[k].body,
-						Expr::Halt(Atom::Lit(Literal::Int(0))),
-					);
-					arms[k].body = Expr::Let(x, t, v, Box::new(body));
-					self.changed.set(true);
-				}
-				None => later.extend(value_vars(&kept[i].2)),
+
+			if targets.is_empty() {
+				later.extend(value_vars(&kept[i].2));
+				continue;
 			}
+
+			let (x, t, v) = kept.remove(i);
+			let vv = value_vars(&v);
+			if targets.len() > 1 {
+				wanted.extend(vv.iter().cloned());
+			}
+			for (pos, &k) in targets.iter().enumerate() {
+				let mut body =
+					std::mem::replace(&mut arms[k].body, Expr::Halt(Atom::Lit(Literal::Int(0))));
+				let name = if pos == 0 {
+					x.clone()
+				} else {
+					let nm = self.fresh(&x);
+					rename_var_in(&mut body, &x, &nm);
+					self.var_tys.borrow_mut().insert(nm.clone(), t.clone());
+					nm
+				};
+				arm_vars[k].remove(&x);
+				arm_vars[k].extend(vv.iter().cloned());
+				arms[k].body = Expr::Let(name, t.clone(), v.clone(), Box::new(body));
+			}
+			self.changed.set(true);
 		}
 		(kept, Expr::Case(scrut, arms))
 	}
@@ -929,16 +1036,21 @@ impl<'a> Cx<'a> {
 		let recursive = self.recursive.contains(name);
 		let all_concrete = args.iter().all(|a| Self::is_concrete(a, facts));
 		let _ = all_concrete;
+
+		let single = self.single.contains(name);
 		let ok = !recursive
 			&& name != owner
-			&& (size <= SMALL_INLINE || (concrete && size <= CONCRETE_INLINE));
+			&& (single || size <= SMALL_INLINE || (concrete && size <= CONCRETE_INLINE));
 		if !ok || !can_reduce(&callee, args, facts) {
 			return None;
 		}
-		if self.budget.get() < size + 1 {
-			return None;
+		if !single {
+			if self.budget.get() < size + 1 {
+				return None;
+			}
+			self.budget.set(self.budget.get() - (size + 1));
 		}
-		self.budget.set(self.budget.get() - (size + 1));
+
 		TRIED.fetch_add(1, Relaxed);
 
 		let mut map = SubstMap::new();
@@ -982,6 +1094,7 @@ impl<'a> Cx<'a> {
 			Value::Fail(m) => Value::Fail(m.clone()),
 			Value::Lambda(p, t, body) => {
 				let np = self.fresh(p);
+				self.var_tys.borrow_mut().insert(np.clone(), t.clone());
 				let mut inner = map.clone();
 				inner.insert(p.clone(), Atom::Var(np.clone()));
 				let nb = self.rename_expr(body, &mut inner);
@@ -995,6 +1108,7 @@ impl<'a> Cx<'a> {
 			Expr::Let(x, t, v, rest) => {
 				let nv = self.rename_value(v, map);
 				let nx = self.fresh(x);
+				self.var_tys.borrow_mut().insert(nx.clone(), t.clone());
 				map.insert(x.clone(), Atom::Var(nx.clone()));
 				let nrest = self.rename_expr(rest, map);
 				Expr::Let(nx, t.clone(), nv, Box::new(nrest))
@@ -1138,6 +1252,259 @@ impl<'a> Cx<'a> {
 		}
 		a
 	}
+
+	fn ty_of_atom(&self, a: &Atom) -> Option<Ty> {
+		match a {
+			Atom::Var(v) => self.var_tys.borrow().get(v).cloned(),
+			Atom::Lit(Literal::Int(_)) => Some(Ty::Int),
+			Atom::Lit(Literal::Float(_)) => Some(Ty::Float),
+			Atom::Lit(Literal::Char(_)) => Some(Ty::Char),
+			Atom::Lit(_) => None,
+			Atom::Global(_, t) | Atom::Method(_, t) => Some(t.clone()),
+		}
+	}
+
+	fn result_ty(&self, e: &Expr) -> Option<Ty> {
+		let mut cur = e;
+		loop {
+			match cur {
+				Expr::Let(_, _, _, rest) => cur = &**rest,
+				Expr::Halt(a) => return self.ty_of_atom(a),
+				Expr::Case(_, arms) => return arms.iter().find_map(|a| self.result_ty(&a.body)),
+			}
+		}
+	}
+
+	// outer arm `m` with the scrutinee replaced by the leaf value `a`
+	fn coc_place(&self, c: &Coc, m: usize, a: &Atom) -> Expr {
+		match &c.joins[m] {
+			Some(j) => {
+				let t = self.fresh("jmp");
+				let ty = c.k_ty.expect("join point result type").clone();
+				self.var_tys.borrow_mut().insert(t.clone(), ty.clone());
+				Expr::Let(
+					t.clone(),
+					ty,
+					Value::App(Atom::Var(j.clone()), a.clone()),
+					Box::new(Expr::Halt(Atom::Var(t))),
+				)
+			}
+			None => {
+				let mut map = SubstMap::new();
+				map.insert(c.x.clone(), a.clone());
+				self.rename_expr(&c.arms[m].body, &mut map)
+			}
+		}
+	}
+
+	fn coc_dispatch(&self, c: &Coc, a: &Atom, fact: Option<Fact>) -> Expr {
+		let known = match &fact {
+			Some(Fact::Ctor(t, _)) | Some(Fact::Tag(t)) => {
+				pick_arm_idx(None, Some(t.as_str()), c.arms)
+			}
+			Some(Fact::Lit(l)) => pick_arm_idx(Some(l), None, c.arms),
+			_ => None,
+		};
+		if let Some(m) = known {
+			return self.coc_place(c, m, a);
+		}
+		let arms = c
+			.arms
+			.iter()
+			.enumerate()
+			.map(|(m, arm)| Arm {
+				pat: arm.pat.clone(),
+				body: self.coc_place(c, m, a),
+			})
+			.collect();
+		Expr::Case(a.clone(), arms)
+	}
+
+	// replace every leaf `Halt(a)` of `e` by the dispatch on `a`
+	fn coc_replace(&self, e: Expr, facts: &FactMap, c: &Coc) -> Expr {
+		let (binds, tail) = flatten(e);
+		let mut local = facts.clone();
+		for (x, _, v) in &binds {
+			record_fact(x, v, &mut local);
+		}
+		let tail = match tail {
+			Expr::Halt(a) => {
+				let fact = fact_of_atom(&a, &local);
+				self.coc_dispatch(c, &a, fact)
+			}
+			Expr::Case(s, arms) => Expr::Case(
+				s,
+				arms.into_iter()
+					.map(|arm| Arm {
+						pat: arm.pat,
+						body: self.coc_replace(arm.body, &local, c),
+					})
+					.collect(),
+			),
+			Expr::Let(..) => unreachable!("flatten never leaves a Let in tail position"),
+		};
+		rebuild(binds, tail)
+	}
+
+	fn case_of_case(
+		&self,
+		kept: &mut Binds,
+		tail: &mut Expr,
+		facts: &FactMap,
+		depth: usize,
+		owner: &str,
+	) -> bool {
+		if disabled("coc") {
+			return false;
+		}
+		let x = match &*tail {
+			Expr::Case(Atom::Var(x), _) => x.clone(),
+			_ => return false,
+		};
+		let Some(idx) = kept.iter().rposition(|(n, _, _)| *n == x) else {
+			return false;
+		};
+		// the call's result must only feed the case
+		if kept[idx + 1..]
+			.iter()
+			.any(|(_, _, v)| value_vars(v).contains(&x))
+		{
+			return false;
+		}
+		let (ty_x, f, a) = match &kept[idx] {
+			(_, ty, Value::App(f, a)) => (ty.clone(), f.clone(), a.clone()),
+			_ => return false,
+		};
+		let (name, mut args): (String, Vec<Atom>) = match &f {
+			Atom::Global(n, _) => (n.clone(), Vec::new()),
+			Atom::Var(p) => match facts.get(p) {
+				Some(Fact::Pap(n, args)) => (n.clone(), args.clone()),
+				_ => return false,
+			},
+			_ => return false,
+		};
+		args.push(a);
+		let Some(callee) = self.funcs.get(&name).cloned() else {
+			return false;
+		};
+		if depth >= MAX_DEPTH
+			|| callee.params.len() != args.len()
+			|| name == owner
+			|| self.recursive.contains(&name)
+			|| !ends_in_case(&callee.body)
+			|| !has_known_leaf(&callee.body)
+		{
+			return false;
+		}
+		let size = expr_size(&callee.body);
+		if (!self.single.contains(&name) && size > COC_CALLEE_MAX) || self.budget.get() < size + 1 {
+			return false;
+		}
+
+		let arms_k: Vec<Arm> = match &*tail {
+			Expr::Case(_, arms) => arms.clone(),
+			_ => return false,
+		};
+
+		// inline and simplify a copy of the callee
+		let mut map = SubstMap::new();
+		for ((p, _), a) in callee.params.iter().zip(args.iter()) {
+			map.insert(p.clone(), a.clone());
+		}
+		let copy = self.rename_expr(&callee.body, &mut map);
+		self.budget.set(self.budget.get() - (size + 1));
+		let simp = self.simplify(copy, &Default::default(), facts, depth + 1, owner);
+		if !ends_in_case(&simp) {
+			return false;
+		}
+
+		// what do the leaves look like? only want this if some outer arm gets resolved
+		let mut leaf_facts: Vec<Option<Fact>> = Vec::new();
+		collect_leaf_facts(&simp, facts, &mut leaf_facts);
+		let known = leaf_facts
+			.iter()
+			.filter(|f| {
+				matches!(
+					f,
+					Some(Fact::Ctor(..)) | Some(Fact::Tag(_)) | Some(Fact::Lit(_))
+				)
+			})
+			.count();
+		if leaf_facts.len() > COC_MAX_LEAVES || known == 0 {
+			return false;
+		}
+
+		// how many leaves reach each outer arm
+		let mut uses = vec![0usize; arms_k.len()];
+		for fct in &leaf_facts {
+			let target = match fct {
+				Some(Fact::Ctor(t, _)) | Some(Fact::Tag(t)) => {
+					pick_arm_idx(None, Some(t.as_str()), &arms_k)
+				}
+				Some(Fact::Lit(l)) => pick_arm_idx(Some(l), None, &arms_k),
+				_ => None,
+			};
+			match target {
+				Some(m) => uses[m] += 1,
+				None => uses.iter_mut().for_each(|u| *u += 1),
+			}
+		}
+		let join: Vec<bool> = arms_k
+			.iter()
+			.zip(uses.iter())
+			.map(|(arm, &u)| u > 1 && expr_size(&arm.body) > COC_DUP_MAX)
+			.collect();
+
+		let k_ty = arms_k.iter().find_map(|arm| self.result_ty(&arm.body));
+		if join.iter().any(|&j| j) && k_ty.is_none() {
+			return false;
+		}
+
+		// join points: `let j = fn x' -> <arm> end`
+		let mut join_names: Vec<Option<Name>> = vec![None; arms_k.len()];
+		let mut join_lets: Binds = Vec::new();
+		for (m, arm) in arms_k.iter().enumerate() {
+			if !join[m] {
+				continue;
+			}
+			let j = self.fresh("join");
+			let param = self.fresh(&x);
+			let mut pm = SubstMap::new();
+			pm.insert(x.clone(), Atom::Var(param.clone()));
+			let body = self.rename_expr(&arm.body, &mut pm);
+			let jty = Ty::Fn(
+				Box::new(ty_x.clone()),
+				Box::new(k_ty.clone().expect("join point result type")),
+			);
+			{
+				let mut vt = self.var_tys.borrow_mut();
+				vt.insert(j.clone(), jty.clone());
+				vt.insert(param.clone(), ty_x.clone());
+			}
+			join_lets.push((
+				j.clone(),
+				jty,
+				Value::Lambda(param, ty_x.clone(), Box::new(body)),
+			));
+			join_names[m] = Some(j);
+		}
+
+		let ctx = Coc {
+			x: &x,
+			arms: &arms_k,
+			joins: &join_names,
+			k_ty: k_ty.as_ref(),
+		};
+		let new_inner = self.coc_replace(simp, facts, &ctx);
+
+		kept.remove(idx);
+		let (more, new_tail) = flatten(new_inner);
+		kept.extend(join_lets);
+		kept.extend(more);
+		*tail = new_tail;
+		self.changed.set(true);
+		true
+	}
 }
 
 fn is_valid_entry_type(ty: &Ty, lang: &Lang) -> bool {
@@ -1221,8 +1588,8 @@ fn pap_of(a: &Atom, paps: &HashMap<String, (String, usize)>) -> Option<(String, 
 	}
 }
 
-// Does evaluating `e` do nothing but allocate closures / partial applications,
-// build values, project, and test constructors?
+// Does evaluating `e` do nothing but allocate closures / paps,
+// build values, project, and test ctors?
 fn cheap_tail(
 	e: &Expr,
 	arity: &HashMap<String, usize>,
@@ -1325,7 +1692,7 @@ fn eta_expand(f: &mut Function, k: usize, counter: &Cell<u64>) {
 	f.body = apply_in_tails(body, &extra, &f.ret, &fresh);
 	f.params.extend(extra);
 	f.ret = new_ret;
-	// `f.ty` (the full signature) is unchanged: same arrows, now all parameters
+	// `f.ty` (the full signature) unchanged
 }
 
 // Repeats until nothing changes, because raising one function (say an alias
@@ -1357,6 +1724,129 @@ fn raise_arity(
 		}
 		if !changed {
 			break;
+		}
+	}
+}
+
+fn disabled(feature: &str) -> bool {
+	static OFF: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+	OFF.get_or_init(|| {
+		std::env::var("IOTA_OPT_DISABLE")
+			.map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+			.unwrap_or_default()
+	})
+	.iter()
+	.any(|s| s == feature)
+}
+
+fn count_refs(e: &Expr, counts: &mut HashMap<String, usize>) {
+	fn atom(a: &Atom, c: &mut HashMap<String, usize>) {
+		if let Atom::Global(n, _) | Atom::Method(n, _) = a {
+			*c.entry(n.clone()).or_insert(0) += 1;
+		}
+	}
+	match e {
+		Expr::Halt(a) => atom(a, counts),
+		Expr::Case(s, arms) => {
+			atom(s, counts);
+			for arm in arms {
+				count_refs(&arm.body, counts);
+			}
+		}
+		Expr::Let(_, _, v, rest) => {
+			match v {
+				Value::Atom(a) | Value::Proj(a, _) | Value::Unwrap(a) => atom(a, counts),
+				Value::App(a, b) | Value::Pair(a, b) => {
+					atom(a, counts);
+					atom(b, counts);
+				}
+				Value::Ctor(_, Some(a)) => atom(a, counts),
+				Value::Lambda(_, _, body) => count_refs(body, counts),
+				_ => {}
+			}
+			count_refs(rest, counts);
+		}
+	}
+}
+
+fn single_site_set(program: &IrProgram, recursive: &HashSet<String>) -> HashSet<String> {
+	if disabled("single") {
+		return HashSet::new();
+	}
+	let mut counts: HashMap<String, usize> = HashMap::new();
+	for f in &program.functions {
+		count_refs(&f.body, &mut counts);
+	}
+	counts
+		.into_iter()
+		.filter(|(n, c)| *c == 1 && !recursive.contains(n) && !n.contains("$lam"))
+		.map(|(n, _)| n)
+		.collect()
+}
+
+const COC_CALLEE_MAX: usize = 48; // size of inlined function
+const COC_MAX_LEAVES: usize = 6; // leaves of inlined case tree
+const COC_DUP_MAX: usize = 12; // outer arms up to this size are copied, not joined
+
+struct Coc<'a> {
+	x: &'a Name,
+	arms: &'a [Arm],
+	joins: &'a [Option<Name>],
+	k_ty: Option<&'a Ty>,
+}
+
+fn pick_arm_idx(
+	known_lit: Option<&Literal>,
+	known_tag: Option<&str>,
+	arms: &[Arm],
+) -> Option<usize> {
+	arms.iter().position(|arm| match &arm.pat {
+		CasePat::Wild => true,
+		CasePat::Lit(l) => known_lit.map_or(false, |k| lit_eq(l, k)),
+		CasePat::Ctor(t) => known_tag.map_or(false, |k| k == t),
+	})
+}
+
+// does some leaf of the (not yet simplified) body return a ctor or literal?
+fn has_known_leaf(e: &Expr) -> bool {
+	let mut known: HashSet<&str> = HashSet::new();
+	let mut cur = e;
+	loop {
+		match cur {
+			Expr::Let(x, _, v, rest) => {
+				if matches!(v, Value::Ctor(..) | Value::Atom(Atom::Lit(_))) {
+					known.insert(x.as_str());
+				}
+				cur = &**rest;
+			}
+			Expr::Halt(Atom::Lit(_)) => return true,
+			Expr::Halt(Atom::Var(n)) => return known.contains(n.as_str()),
+			Expr::Halt(_) => return false,
+			Expr::Case(_, arms) => return arms.iter().any(|a| has_known_leaf(&a.body)),
+		}
+	}
+}
+
+// what each leaf of `e` is known to be (a ctor, a literal, or nothing)
+fn collect_leaf_facts(e: &Expr, facts: &FactMap, out: &mut Vec<Option<Fact>>) {
+	let mut local = facts.clone();
+	let mut cur = e;
+	loop {
+		match cur {
+			Expr::Let(x, _, v, rest) => {
+				record_fact(x, v, &mut local);
+				cur = &**rest;
+			}
+			Expr::Halt(a) => {
+				out.push(fact_of_atom(a, &local));
+				return;
+			}
+			Expr::Case(_, arms) => {
+				for arm in arms {
+					collect_leaf_facts(&arm.body, &local, out);
+				}
+				return;
+			}
 		}
 	}
 }

@@ -23,6 +23,7 @@ mod backend;
 mod diag;
 mod ir;
 mod lang;
+mod lift_spec;
 mod optimize;
 mod parser;
 mod spec;
