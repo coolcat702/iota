@@ -14,6 +14,7 @@ use std::{
 	panic::{catch_unwind, AssertUnwindSafe},
 	path::{Path, PathBuf},
 	process::{self, Command},
+	time::Instant,
 };
 
 use ariadne::{Color, Label, Report, ReportKind};
@@ -163,6 +164,9 @@ struct Cli {
 	#[arg(long, value_name = "FILE")]
 	lang: Option<PathBuf>,
 
+	#[arg(long, short)]
+	verbose: bool,
+
 	/// C compiler used to turn the LLVM IR into an executable (must be clang,
 	/// or accept `.ll` files)
 	#[arg(long, env = "IOTA_CC", default_value = "clang")]
@@ -187,6 +191,9 @@ struct Cli {
 	/// Suppress progress output (errors are still shown)
 	#[arg(short, long)]
 	quiet: bool,
+
+	#[arg(long, env = "IOTA_LD")]
+	ld: Option<String>,
 }
 
 struct Loader<'r, 'd> {
@@ -379,38 +386,91 @@ fn dump_mir(m: &MProgram) {
 	);
 }
 
-fn link(cli: &Cli, diag: &mut Diag, ll: &Path, exe: &Path) -> bool {
-	let dir = std::env::temp_dir().join(format!("iota-{}", process::id()));
+fn cache_dir() -> PathBuf {
+	let base = std::env::var_os("XDG_CACHE_HOME")
+		.map(PathBuf::from)
+		.or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+		.unwrap_or_else(std::env::temp_dir);
+	base.join("iota")
+}
+
+// The runtime only changes when iota_rt.c (or the compiler flags) change, so it is
+// built once. Returns the path of the object file.
+fn runtime_object(cli: &Cli, diag: &mut Diag) -> Option<PathBuf> {
+	use std::hash::{Hash, Hasher};
+	let mut h = std::collections::hash_map::DefaultHasher::new();
+	RUNTIME_C.hash(&mut h);
+	cli.cc.hash(&mut h);
+	cli.cc_opt.hash(&mut h);
+	let dir = cache_dir();
+	let obj = dir.join(format!("iota_rt-{:016x}.o", h.finish()));
+	if obj.is_file() {
+		return Some(obj);
+	}
 	if let Err(e) = fs::create_dir_all(&dir) {
 		diag.error(
-			format!("cannot create temporary directory {}: {}", dir.display(), e),
+			format!("cannot create cache directory {}: {}", dir.display(), e),
 			None,
 			None,
 		);
-		return false;
+		return None;
 	}
-	let rt = dir.join("iota_rt.c");
-	if let Err(e) = fs::write(&rt, RUNTIME_C) {
+	// build under a private name, then rename: another compiler running at the
+	// same time never sees a half-written object
+	let tmp_c = dir.join(format!("iota_rt-{}.c", process::id()));
+	let tmp_o = dir.join(format!("iota_rt-{}.o", process::id()));
+	if let Err(e) = fs::write(&tmp_c, RUNTIME_C) {
 		diag.error(format!("cannot write the runtime: {}", e), None, None);
-		return false;
+		return None;
 	}
 	let status = Command::new(&cli.cc)
 		.arg(&cli.cc_opt)
-		.arg("-Wno-override-module")
-		.arg(ll)
-		.arg(&rt)
+		.arg("-c")
+		.arg(&tmp_c)
 		.arg("-o")
-		.arg(exe)
-		.arg("-lm")
+		.arg(&tmp_o)
 		.status();
-	let _ = fs::remove_dir_all(&dir);
+	let _ = fs::remove_file(&tmp_c);
 	match status {
+		Ok(s) if s.success() => {
+			if fs::rename(&tmp_o, &obj).is_err() {
+				// lost a race or cannot rename: use what we built
+				return if obj.is_file() {
+					Some(obj)
+				} else {
+					Some(tmp_o)
+				};
+			}
+			Some(obj)
+		}
+		Ok(s) => {
+			let _ = fs::remove_file(&tmp_o);
+			diag.error(
+				format!("`{}` failed to compile the runtime ({})", cli.cc, s),
+				None,
+				None,
+			);
+			None
+		}
+		Err(e) => {
+			diag.error(
+				format!("could not run `{}`: {}", cli.cc, e),
+				None,
+				Some("install clang, or point --cc / $IOTA_CC at a C compiler"),
+			);
+			None
+		}
+	}
+}
+
+fn run_cc(cli: &Cli, diag: &mut Diag, cmd: &mut Command, what: &str, hint: Option<&str>) -> bool {
+	match cmd.status() {
 		Ok(s) if s.success() => true,
 		Ok(s) => {
 			diag.error(
-				format!("`{}` failed ({})", cli.cc, s),
+				format!("`{}` failed while {} ({})", cli.cc, what, s),
 				None,
-				Some("the generated LLVM IR may be invalid (re-run with --emit llvm and --keep-ll to inspect it)"),
+				hint,
 			);
 			false
 		}
@@ -425,6 +485,57 @@ fn link(cli: &Cli, diag: &mut Diag, ll: &Path, exe: &Path) -> bool {
 			false
 		}
 	}
+}
+
+fn link(cli: &Cli, diag: &mut Diag, ll: &Path, exe: &Path) -> bool {
+	let t = Instant::now();
+	let Some(rt) = runtime_object(cli, diag) else {
+		return false;
+	};
+	let t_rt = t.elapsed();
+
+	// LLVM module -> object
+	let obj = exe.with_extension("o");
+	let t = Instant::now();
+	let ok = run_cc(
+		cli,
+		diag,
+		Command::new(&cli.cc)
+			.arg(&cli.cc_opt)
+			.arg("-Wno-override-module")
+			.arg("-c")
+			.arg(ll)
+			.arg("-o")
+			.arg(&obj),
+		"compiling the generated LLVM IR",
+		Some("the generated LLVM IR may be invalid (re-run with --emit llvm and --keep-ll to inspect it)"),
+	);
+	if !ok {
+		return false;
+	}
+	let t_mod = t.elapsed();
+
+	// link
+	let t = Instant::now();
+	let mut cmd = Command::new(&cli.cc);
+	cmd.arg(&obj).arg(&rt).arg("-o").arg(exe).arg("-lm");
+	if let Some(ld) = &cli.ld {
+		cmd.arg(format!("-fuse-ld={}", ld));
+	}
+	let ok = run_cc(cli, diag, &mut cmd, "linking", None);
+	let _ = fs::remove_file(&obj);
+	if !ok {
+		return false;
+	}
+	let t_ld = t.elapsed();
+
+	if cli.verbose {
+		eprintln!(
+			"[iota]   link: runtime {:.0?}, module {:.0?}, ld {:.0?}",
+			t_rt, t_mod, t_ld
+		);
+	}
+	true
 }
 
 fn main() {
