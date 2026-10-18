@@ -39,47 +39,47 @@ let neighbours
     : Cell -> World
     = match
         (x * y) -> [
-            (sub x 1 * sub y 1), (x * sub y 1), (add x 1 * sub y 1),
-            (sub x 1 * y),                      (add x 1 * y),
-            (sub x 1 * add y 1), (x * add y 1), (add x 1 * add y 1)
+            (pred x * pred y), (x * pred y), (succ x * pred y),
+            (pred x * y),                    (succ x * y),
+            (pred x * succ y), (x * succ y), (succ x * succ y)
         ] end
     end
 end
 
 let count
     : World -> Cell -> Int
-    = match
-        w, c -> len (filter (fn n -> member n w end) (neighbours c)) end
+    = fn w ->
+        fn c -> len (filter (flip member w) (neighbours c)) end
     end
 end
 
 let survives
     : Bool -> Int -> Bool
-    = match
-        alive, n -> cond alive (or (eq n 2) (eq n 3)) (eq n 3) end
+    = fn alive ->
+        fn n -> cond alive (or (eq n 2) (eq n 3)) (eq n 3) end
     end
 end
 
 # Only live cells and their neighbours can be alive next generation.
 let step
     : World -> World
-    = match
-        w -> filter (fn c -> survives (member c w) (count w c) end)
-                    (nub (append w (bind neighbours w))) end
+    = fn w ->
+        filter (fn c -> survives (member c w) (count w c) end)
+               (nub (append w (bind neighbours w)))
     end
 end
 
 let advance
     : Int -> World -> World
-    = match
-        n, w -> cond (lse n 0) w (advance (sub n 1) (step w)) end
+    = fn n ->
+        fn w -> cond (lse n 0) w (advance (sub n 1) (step w)) end
     end
 end
 
 let toggle
     : Cell -> World -> World
-    = match
-        c, w -> cond (member c w) (filter (fn d -> neq c d end) w) (List:Cons (c * w)) end
+    = fn c ->
+        fn w -> cond (member c w) (filter (neq c) w) (List:Cons (c * w)) end
     end
 end
 
@@ -99,8 +99,8 @@ end
 
 let row
     : World -> Int -> String
-    = match
-        w, y -> map (fn x -> cond (member (x * y) w) '#' '.' end) (range 0 width) end
+    = fn w ->
+        fn y -> map (fn x -> cond (member (x * y) w) '#' '.' end) (range 0 width) end
     end
 end
 
@@ -115,8 +115,8 @@ end
 
 let draw
     : Int -> World -> IO Unit
-    = match
-        g, w -> seq (append
+    = fn g ->
+        fn w -> seq (append
             [println (concat "Generation " (show g))]
             (append (map (fn y -> println (row w y) end) (range 0 height))
                     [println (concat "Live cells: " (show (len w)))])) end
@@ -125,21 +125,11 @@ end
 
 # input
 
-let space
-    : Char -> Bool
-    = eq ' '
-end
-
-let not_space
-    : Char -> Bool
-    = comp not space
-end
-
 let drop_word
     : String -> String
     = match
         []                 -> [] end
-        List:Cons (c * cs) -> cond (space c) (List:Cons (c * cs)) (drop_word cs) end
+        List:Cons (c * cs) -> cond (eq ' ' c) (List:Cons (c * cs)) (drop_word cs) end
     end
 end
 
@@ -148,18 +138,8 @@ let words
     = match
         []                   -> [] end
         List:Cons (' ' * cs) -> words cs end
-        s -> List:Cons (take_while not_space s * words (drop_word s)) end
+        s -> List:Cons (take_while (neq ' ') s * words (drop_word s)) end
     end
-end
-
-let to_int
-    : String -> Maybe Int
-    = parse
-end
-
-let same
-    : String -> String -> Bool
-    = eq
 end
 
 # ---- the interactive loop ----
@@ -171,15 +151,15 @@ end
 
 let help
     : Int -> World -> IO Unit
-    = match
-        g, w -> println "?  try: [enter]  N  t X Y  g  p  c  q" > then (loop g w) end
+    = fn g ->
+        fn w -> println "?  try: [enter]  N  t X Y  g  p  c  q" > then (loop g w) end
     end
 end
 
 let loop
     : Int -> World -> IO Unit
-    = match
-        g, w -> draw g w > then prompt > then
+    = fn g ->
+        fn w -> draw g w > then prompt > then
                 (getln > bind (fn line -> command g w (words line) end))
         end
     end
@@ -191,20 +171,19 @@ let command
         g, w, []                              -> loop (add g 1) (step w) end
         g, w, List:Cons (a * [])              -> single g w a end
         g, w, List:Cons (t * List:Cons (x * List:Cons (y * []))) ->
-            cond (same t "t") (place g w (to_int x) (to_int y)) (help g w) end
+            cond (eq t "t") (place g w (parse x) (parse y)) (help g w) end
         g, w, _                               -> help g w end
     end
 end
 
 let single
     : Int -> World -> String -> IO Unit
-    = match
-        g, w, a ->
-            cond (same a "q") (println "Quitting")
-            (cond (same a "c") (loop 0 [])
-            (cond (same a "g") (loop 0 glider)
-            (cond (same a "p") (loop 0 pentomino)
-            (run g w (to_int a))))) end
+    = fn g -> fn w -> fn a ->
+            cond (eq a "q") (println "Quitting")
+            (cond (eq a "c") (loop 0 [])
+            (cond (eq a "g") (loop 0 glider)
+            (cond (eq a "p") (loop 0 pentomino)
+            (run g w (parse a))))) end end
     end
 end
 
