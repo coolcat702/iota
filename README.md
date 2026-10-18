@@ -148,7 +148,7 @@ Iota has two composition operators. In order of application, they are:
      - Left-associative: `f > g > h = (f > g) > h`
 
 Iota eliminates all value‑level operators.
-Only type combinators (`+`, `*`, `->`) and function combinators (<`, `>`) exist.
+Only type combinators (`+`, `*`, `->`) and composition operators (`<`, `>`) exist.
 All other relations are expressed as functions from first principles.
 
 ## Combinators
