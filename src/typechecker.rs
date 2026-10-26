@@ -1864,7 +1864,11 @@ fn collect_top_level_in(
 
 				let qualified = format!("{}:{}", path.join(":"), local_key);
 				env.insert(qualified, scheme.clone());
-				env.insert(local_key.clone(), scheme.clone());
+				// Only the Prelude is visible without a qualifier. Publishing every module's
+				// names bare would let a library's `filter` silently replace the Prelude's.
+				if path.len() == 1 && path[0] == "Prelude" {
+					env.insert(local_key.clone(), scheme.clone());
+				}
 
 				let short = local_key
 					.split(':')
@@ -2291,8 +2295,9 @@ fn forward_declare_tl_in(
 
 				let qualified = format!("{}:{}", path.join(":"), local_key);
 				env.insert(qualified, scheme.clone());
-
-				env.insert(local_key.clone(), scheme.clone());
+				if path.len() == 1 && path[0] == "Prelude" {
+					env.insert(local_key.clone(), scheme.clone());
+				}
 
 				let short = local_key
 					.split(':')

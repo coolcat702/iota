@@ -37,15 +37,24 @@ lang_items! {
 macro_rules! intrinsics {
 	($($variant:ident = $key:literal),* $(,)?) => {
 		#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-		pub enum Intrinsic { $($variant),* }
+		pub enum Intrinsic {
+			$($variant,)*
+			/// An effectful runtime primitive from `rtprims::TABLE` (by index).
+			Rt(u8),
+		}
 		#[allow(unused)]
 		impl Intrinsic {
-			pub const ALL: &'static [Intrinsic] = &[$(Intrinsic::$variant),*];
 			pub fn key(self) -> &'static str {
-				match self { $(Intrinsic::$variant => $key),* }
+				match self {
+					$(Intrinsic::$variant => $key,)*
+					Intrinsic::Rt(i) => crate::rtprims::get(i).key,
+				}
 			}
 			fn from_key(k: &str) -> Option<Intrinsic> {
-				match k { $($key => Some(Intrinsic::$variant),)* _ => None }
+				match k {
+					$($key => Some(Intrinsic::$variant),)*
+					_ => crate::rtprims::by_key(k).map(Intrinsic::Rt),
+				}
 			}
 		}
 	};
@@ -56,7 +65,9 @@ intrinsics! {
 	IEq = "ieq", INeq = "ineq", IGr = "igr", IGre = "igre", ILs = "ils", ILse = "ilse",
 	FAdd = "fadd", FSub = "fsub", FMul = "fmul", FDiv = "fdiv",
 	FEq = "feq", FNeq = "fneq", FGr = "fgr", FGre = "fgre", FLs = "fls", FLse = "flse",
-	ShowInt = "show_int", ShowFloat = "show_float",
+	IAnd = "iand", IOr = "ior", IXor = "ixor", IShl = "ishl", IShr = "ishr", ISar = "isar",
+	CharOrd = "ord", CharChr = "chr", IToF = "itof", FToI = "ftoi", UnitVal = "unit",
+	ShowInt = "show_int", ShowFloat = "show_float", FloatRepr = "float_repr",
 	Print = "print", Println = "println", GetLn = "getln",
 	IoReturn = "io_return", IoBind = "io_bind",
 	SumLeft = "sum_left", SumRight = "sum_right",
@@ -70,6 +81,8 @@ impl Intrinsic {
 		matches!(
 			self,
 			IAdd | ISub
+				| IAnd | IOr | IXor | IShl | IShr | ISar
+				| CharOrd | CharChr | IToF
 				| IMul | IEq | INeq
 				| IGr | IGre | ILs
 				| ILse | FAdd

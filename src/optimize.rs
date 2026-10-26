@@ -1547,7 +1547,7 @@ pub fn check_entry(program: &IrProgram, entry: &str, lang: &Lang) -> Result<(), 
 	if !is_valid_entry_type(&f.ret, lang) {
 		return Err(Diagnostic::error(
 			format!(
-				"entry point `{}` must have type Unit, Int, IO Unit or IO Int (found {})",
+				"entry point `{}` must have type Unit, Int, IO Unit, IO Int, or List String -> IO Unit / IO Int (found {})",
 				entry,
 				display_ty(&f.ret)
 			),

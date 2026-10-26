@@ -341,7 +341,9 @@ impl<'a> L<'a> {
 		use Intrinsic::*;
 		let body = match op {
 			IAdd | ISub | IMul | IDiv | IMod | IEq | INeq | IGr | IGre | ILs | ILse | FAdd
-			| FSub | FMul | FDiv | FEq | FNeq | FGr | FGre | FLs | FLse | ShowInt | ShowFloat => ret_r(
+			| FSub | FMul | FDiv | FEq | FNeq | FGr | FGre | FLs | FLse | ShowInt | ShowFloat
+			| FloatRepr | IAnd | IOr | IXor | IShl | IShr | ISar | CharOrd | CharChr | IToF
+			| FToI => ret_r(
 				ret.clone(),
 				MValue::Prim(op, (0..params.len()).map(a).collect()),
 			),
@@ -355,6 +357,18 @@ impl<'a> L<'a> {
 					_ => MTy::Unit,
 				};
 				action(vec![], ret_r(res, MValue::Prim(GetLn, vec![])))
+			}
+			// the one value of `Unit`
+			UnitVal => MExpr::Ret(MAtom::Unit),
+			// Every runtime primitive is an `IO` action: building it has no effect, applying
+			// the closure to the world token runs the C function.
+			Rt(_) => {
+				let res = match &ret {
+					MTy::Fn(_, b) => (**b).clone(),
+					_ => MTy::Unit,
+				};
+				let args = (0..params.len()).map(a).collect();
+				action(params.clone(), ret_r(res, MValue::Prim(op, args)))
 			}
 			IoReturn => action(vec![("a0".into(), params[0].1.clone())], MExpr::Ret(a(0))),
 			IoBind => {
@@ -445,6 +459,7 @@ impl<'a> L<'a> {
 	fn push_pre(&self, fr: &mut Frame, pre: &mut Pre, hint: &str, ty: MTy, v: MValue) -> MAtom {
 		let x = self.fresh(fr, hint);
 		fr.tys.insert(x.clone(), ty.clone());
+
 		pre.push((x.clone(), ty, v));
 		MAtom::Var(x)
 	}
@@ -490,10 +505,8 @@ impl<'a> L<'a> {
 							(MPat::Ctor(bare(t).to_string()), Some(bare(t).to_string()))
 						}
 					};
-					let saved = match (&ctor, a) {
-						(Some(c), Atom::Var(v)) => {
-							Some((v.clone(), fr.known.insert(v.clone(), c.clone())))
-						}
+					let saved = match (&ctor, known_key(a)) {
+						(Some(c), Some(v)) => Some((v.clone(), fr.known.insert(v, c.clone()))),
 						_ => None,
 					};
 					let body = self.expr(fr, &arm.body)?;
@@ -701,18 +714,27 @@ impl<'a> L<'a> {
 			}
 			Value::Unwrap(a) => {
 				let ma = self.atom(fr, a, pre)?;
-				let ctor = match a {
-					Atom::Var(n) => fr.known.get(n).cloned(),
-					_ => None,
-				}
-				.ok_or_else(|| {
-					"internal: `unwrap` of a value whose constructor is not known".to_string()
-				})?;
+				let ctor = known_key(a)
+					.and_then(|k| fr.known.get(&k).cloned())
+					.ok_or_else(|| {
+						"internal: `unwrap` of a value whose constructor is not known".to_string()
+					})?;
 				Ok(VR::Val(MValue::Unwrap(ma, ctor)))
 			}
 			Value::Str(s) => Ok(VR::Val(MValue::Str(s.clone()))),
 			Value::Fail(m) => Ok(VR::Val(MValue::Fail(m.clone()))),
 		}
+	}
+}
+
+/// What `Frame::known` is keyed by. The optimizer can inline a global into a `case`
+/// scrutinee, so a global that was matched is as good as a variable for a later `unwrap`.
+/// (`@` cannot start a variable name, so the two never collide.)
+fn known_key(a: &Atom) -> Option<String> {
+	match a {
+		Atom::Var(n) => Some(n.clone()),
+		Atom::Global(g, _) => Some(format!("@{}", g)),
+		_ => None,
 	}
 }
 

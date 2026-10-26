@@ -78,7 +78,7 @@ impl Cache<usize> for SourceRegistry {
 
 fn decode_escapes(s: &str) -> String {
 	let mut out = String::with_capacity(s.len());
-	let mut chars = s.chars();
+	let mut chars = s.chars().peekable();
 	while let Some(c) = chars.next() {
 		if c != '\\' {
 			out.push(c);
@@ -89,6 +89,32 @@ fn decode_escapes(s: &str) -> String {
 			Some('t') => out.push('\t'),
 			Some('r') => out.push('\r'),
 			Some('0') => out.push('\0'),
+			Some('e') => out.push('\x1b'), // ESC, for ANSI escape sequences
+			Some('a') => out.push('\x07'),
+			// \xHH: exactly two hex digits
+			Some('x') => {
+				let hex: String = (0..2).filter_map(|_| chars.next_if(|c| c.is_ascii_hexdigit())).collect();
+				match (hex.len() == 2).then(|| u32::from_str_radix(&hex, 16).ok()).flatten() {
+					Some(v) => out.push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+					None => {
+						out.push('x');
+						out.push_str(&hex);
+					}
+				}
+			}
+			// \u{H...}: any Unicode scalar value
+			Some('u') if chars.peek() == Some(&'{') => {
+				chars.next();
+				let mut hex = String::new();
+				while let Some(h) = chars.next_if(|c| c.is_ascii_hexdigit()) {
+					hex.push(h);
+				}
+				let closed = chars.next_if_eq(&'}').is_some();
+				match u32::from_str_radix(&hex, 16).ok().filter(|_| closed && !hex.is_empty()) {
+					Some(v) => out.push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+					None => out.push('\u{FFFD}'),
+				}
+			}
 			Some('\\') => out.push('\\'),
 			Some('\'') => out.push('\''),
 			Some('"') => out.push('"'),
@@ -101,7 +127,7 @@ fn decode_escapes(s: &str) -> String {
 
 #[derive(Logos, Debug, PartialEq, Clone)]
 enum Token {
-	#[regex(r"[a-zA-Z][a-zA-Z0-9_\-.]*", |lex| lex.slice().to_string())]
+	#[regex(r"[a-zA-Z][a-zA-Z0-9_\-./]*", |lex| lex.slice().to_string())]
 	Ident(String),
 
 	#[token("let")]
@@ -161,7 +187,7 @@ enum Token {
 	#[regex(r"[-+]?[0-9]*(?:\.[0-9]+)", |lex| lex.slice().parse::<f64>().unwrap())]
 	FloatLit(f64),
 
-	#[regex(r"'(\\.|[^'\\])'", |lex| {
+	#[regex(r"'(\\x[0-9a-fA-F]{2}|\\u\{[0-9a-fA-F]+\}|\\.|[^'\\])'", |lex| {
         let slice = lex.slice();
         let inner = &slice[1..slice.len() - 1];
         decode_escapes(inner).chars().next().unwrap_or_default()
@@ -1295,16 +1321,25 @@ impl Parser {
 		self.debug_print("parse lambda");
 		self.eat(registry, &Token::FnKw)?;
 		let start = self.peek().unwrap().span;
-		let arg = self.parse_ident(registry)?;
+		// `fn x, y -> M end` is `fn x -> fn y -> M end end`
+		let mut params = vec![self.parse_ident(registry)?];
+		while self.next_is(&Token::Comma) {
+			self.eat(registry, &Token::Comma)?;
+			params.push(self.parse_ident(registry)?);
+		}
 		self.eat(registry, &Token::Arrow)?;
-		let body = self.parse_expr_with_parens(registry)?;
+		let mut body = self.parse_expr_with_parens(registry)?;
 		self.eat(registry, &Token::End)?;
 
 		let end = self.peek().map(|t| t.span.end).unwrap_or(start.end);
-		Some(Spanned {
-			item: Expr::Fn(arg, Box::new(body)),
-			span: Span::new(self.source_id, start.start, end),
-		})
+		let span = Span::new(self.source_id, start.start, end);
+		for arg in params.into_iter().rev() {
+			body = Spanned {
+				item: Expr::Fn(arg, Box::new(body)),
+				span,
+			};
+		}
+		Some(body)
 	}
 
 	fn parse_type(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Type>> {

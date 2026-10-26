@@ -27,6 +27,7 @@ mod lang;
 mod lift_spec;
 mod optimize;
 mod parser;
+mod rtprims;
 mod spec;
 mod typechecker;
 mod types;
@@ -124,6 +125,10 @@ struct Cli {
 	/// Entry point source file
 	file: PathBuf,
 
+	/// Arguments passed to the program with `--run` (after `--`)
+	#[arg(last = true)]
+	program_args: Vec<String>,
+
 	/// How far to go
 	#[arg(long, value_enum, default_value_t = Stage::Exe)]
 	emit: Stage,
@@ -196,6 +201,28 @@ struct Cli {
 	ld: Option<String>,
 }
 
+/// The standard library: `import file std/<name>.iota` falls back to these when the project
+/// has no such file of its own.
+const STD_FILES: &[(&str, &str)] = &[
+	("std/str.iota", include_str!("../std/str.iota")),
+	("std/path.iota", include_str!("../std/path.iota")),
+	("std/fs.iota", include_str!("../std/fs.iota")),
+	("std/sort.iota", include_str!("../std/sort.iota")),
+	("std/search.iota", include_str!("../std/search.iota")),
+	("std/hashmap.iota", include_str!("../std/hashmap.iota")),
+	("std/hashset.iota", include_str!("../std/hashset.iota")),
+	("std/json.iota", include_str!("../std/json.iota")),
+	("std/time.iota", include_str!("../std/time.iota")),
+	("std/rng.iota", include_str!("../std/rng.iota")),
+	("std/process.iota", include_str!("../std/process.iota")),
+	("std/ansi.iota", include_str!("../std/ansi.iota")),
+	("std/term.iota", include_str!("../std/term.iota")),
+];
+
+fn std_source(name: &str) -> Option<&'static str> {
+	STD_FILES.iter().find(|(n, _)| *n == name).map(|(_, s)| *s)
+}
+
 struct Loader<'r, 'd> {
 	diag: &'d mut Diag<'r>,
 	loaded: HashMap<PathBuf, Program>,
@@ -218,6 +245,32 @@ impl<'r, 'd> Loader<'r, 'd> {
 	fn io_error(&mut self, msg: String, span: Option<Span>) {
 		self.diag.error(msg, span, None);
 		self.failed = true;
+	}
+
+	/// A file of the embedded standard library (it can only import other std files).
+	fn load_embedded(&mut self, name: &str, import_span: Option<Span>) {
+		let Some(src) = std_source(name) else {
+			return self.io_error(format!("no standard library file '{}'", name), import_span);
+		};
+		let key = PathBuf::from(format!("<std>/{}", name));
+		if self.loaded.contains_key(&key) {
+			return;
+		}
+		let source_id = self.diag.registry.add(format!("<{}>", name), src.to_string());
+		let program = match parse(self.diag.registry, source_id, self.debug) {
+			Ok(p) => p,
+			Err(ds) => {
+				self.diag.report_all(&ds);
+				self.failed = true;
+				return;
+			}
+		};
+		let imports = collect_file_imports(&program);
+		self.loaded.insert(key.clone(), program);
+		for (import_name, span) in imports {
+			self.load_embedded(&import_name, Some(span));
+		}
+		self.order.push(key);
 	}
 
 	fn load(&mut self, path: &Path, import_span: Option<Span>) {
@@ -251,8 +304,9 @@ impl<'r, 'd> Loader<'r, 'd> {
 			}
 		};
 		let imports = collect_file_imports(&program);
+		// registered now (so import cycles stop here) but ordered after its imports: type names
+		// are global, so a file's imports must come before it
 		self.loaded.insert(canonical.clone(), program);
-		self.order.push(canonical.clone());
 
 		let dir = canonical
 			.parent()
@@ -261,6 +315,9 @@ impl<'r, 'd> Loader<'r, 'd> {
 		for (import_name, span) in imports {
 			match resolve_import(&dir, &import_name) {
 				Some(found) => self.load(&found, Some(span)),
+				None if std_source(&import_name).is_some() => {
+					self.load_embedded(&import_name, Some(span))
+				}
 				None => {
 					self.diag.error(
 						format!("import '{}' not found (searched in '{}')", import_name, dir.display()),
@@ -271,6 +328,7 @@ impl<'r, 'd> Loader<'r, 'd> {
 				}
 			}
 		}
+		self.order.push(canonical);
 	}
 }
 
@@ -563,6 +621,62 @@ fn main() {
 	process::exit(status);
 }
 
+/// An entry point of type `List String -> IO Int` (or `IO Unit`) gets the command line
+/// arguments: this adds a zero-parameter entry `Prelude:entry_with_args = with_args main`
+/// and returns its name. Any other entry type is left for `check_entry` to judge.
+fn wrap_entry_args(program: &mut ir::IrProgram, entry: &str, lang: &Lang) -> Option<String> {
+	use ir::{Atom, Expr, Function, Value};
+	use typechecker::Ty;
+	let f = program.functions.iter().find(|f| f.name == entry)?;
+	// `let main : List String -> IO Int = fn argv -> ... end` is lowered with one parameter;
+	// a point-free definition has none and a function type as its result
+	let (arg, res): (Ty, Ty) = match (f.params.as_slice(), &f.ret) {
+		([(_, a)], r) => (a.clone(), r.clone()),
+		([], Ty::Fn(a, r)) => ((**a).clone(), (**r).clone()),
+		_ => return None,
+	};
+	let (arg, res) = (&arg, &res);
+	let is_io_of_status = matches!(res, Ty::App(h, a)
+		if matches!(h.as_ref(), Ty::Named(n) if n == lang.item(LangItem::IoType))
+			&& matches!(a.as_ref(), Ty::Unit | Ty::Int));
+	let list = lang.item(LangItem::ListType);
+	let is_string_list = matches!(arg, Ty::App(h, a)
+		if matches!(h.as_ref(), Ty::Named(n) if n == list)
+			&& (matches!(a.as_ref(), Ty::Named(s) if s == "String")
+				|| matches!(a.as_ref(), Ty::App(h2, c)
+					if matches!(h2.as_ref(), Ty::Named(n) if n == list) && matches!(c.as_ref(), Ty::Char))));
+	if !is_io_of_status || !is_string_list {
+		return None;
+	}
+	let (fty, res) = (Ty::Fn(Box::new(arg.clone()), Box::new(res.clone())), res.clone());
+	let with_args_ty = Ty::Fn(Box::new(fty.clone()), Box::new(res.clone()));
+	let name = "Prelude:entry_with_args".to_string();
+	let body = Expr::Let(
+		"main".into(),
+		fty.clone(),
+		Value::Atom(Atom::Global(entry.to_string(), fty)),
+		Box::new(Expr::Let(
+			"r".into(),
+			res.clone(),
+			Value::App(
+				Atom::Global("Prelude:with_args".into(), with_args_ty),
+				Atom::Var("main".into()),
+			),
+			Box::new(Expr::Halt(Atom::Var("r".into()))),
+		)),
+	);
+	let span = f.span;
+	program.functions.push(Function {
+		name: name.clone(),
+		params: vec![],
+		ret: res.clone(),
+		ty: res,
+		body,
+		span,
+	});
+	Some(name)
+}
+
 fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 	if !cli.file.exists() {
 		diag.error(
@@ -686,7 +800,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 
 	// 4. lower to anf
 	let t = stage("lower to IR");
-	let (generic, overloads) = match ir::lower_program(&typed, &env, &lang) {
+	let (mut generic, overloads) = match ir::lower_program(&typed, &env, &lang) {
 		Ok(x) => x,
 		Err(ds) => {
 			diag.report_all(&ds);
@@ -698,6 +812,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 		generic.functions.len(),
 		generic.externs.len()
 	));
+	let entry = wrap_entry_args(&mut generic, &entry, &lang).unwrap_or(entry);
 	if let Err(d) = optimize::check_entry(&generic, &entry, &lang) {
 		diag.report(&d);
 		return 1;
@@ -847,7 +962,7 @@ fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
 
 		ui::running(&path);
 
-		return match Command::new(&path).status() {
+		return match Command::new(&path).args(&cli.program_args).status() {
 			Ok(s) => s.code().unwrap_or(1),
 			Err(e) => {
 				diag.error(

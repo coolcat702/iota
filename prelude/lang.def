@@ -52,3 +52,56 @@ IO:return = io_return
 IO:bind   = io_bind
 Prelude:left     = sum_left
 Prelude:right    = sum_right
+
+# ---- pure primitives ------------------------------------------------------
+Prelude:unit          = unit
+Prelude:ord           = ord
+Prelude:chr           = chr
+Prelude:int_to_float  = itof
+Prelude:float_to_int  = ftoi
+Prelude:float_repr    = float_repr
+Prelude:bit_and       = iand
+Prelude:bit_or        = ior
+Prelude:bit_xor       = ixor
+Prelude:shift_left    = ishl
+Prelude:shift_right   = ishr
+Prelude:shift_right_arith = isar
+
+# ---- runtime primitives (see src/rtprims.rs) ------------------------------
+# file system
+Prelude:prim_fs_read      = fs_read
+Prelude:prim_fs_write     = fs_write
+Prelude:prim_fs_kind      = fs_kind
+Prelude:prim_fs_stat      = fs_stat
+Prelude:prim_fs_remove    = fs_remove
+Prelude:prim_fs_mkdir     = fs_mkdir
+Prelude:prim_fs_list      = fs_list
+Prelude:prim_fs_rename    = fs_rename
+Prelude:prim_fs_cwd       = fs_cwd
+Prelude:prim_fs_chdir     = fs_chdir
+Prelude:prim_fs_realpath  = fs_realpath
+# process, environment, standard streams
+Prelude:prim_sys_args     = sys_args
+Prelude:prim_sys_exit     = sys_exit
+Prelude:prim_sys_getenv   = sys_getenv
+Prelude:prim_sys_environ  = sys_environ
+Prelude:prim_sys_pid      = sys_pid
+Prelude:prim_io_flush     = io_flush
+Prelude:prim_io_eprint    = io_eprint
+Prelude:prim_io_stdin_all = io_stdin_all
+Prelude:prim_io_getln_opt = io_getln_opt
+# time, randomness
+Time:prim_unix            = time_unix
+Time:prim_mono            = time_mono
+Time:prim_offset          = time_offset
+Time:prim_sleep           = time_sleep
+Rng:prim_seed             = rng_seed
+# terminal
+Term:prim_is_tty          = term_is_tty
+Term:prim_raw             = term_raw
+Term:prim_key             = term_key
+Term:prim_cols            = term_cols
+Term:prim_rows            = term_rows
+Term:prim_resized         = term_resized
+# child processes
+Process:prim_run          = proc_run

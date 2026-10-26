@@ -311,6 +311,26 @@ let or
     end
 end
 
+let nor
+    : Bool -> Bool -> Bool
+    = comp2 not or
+end
+
+let nand
+    : Bool -> Bool -> Bool
+    = comp2 not and
+end
+
+let xor
+    : Bool -> Bool -> Bool
+    = fork (fork nor) and nor
+end
+
+let xnor
+    : Bool -> Bool -> Bool
+    = comp2 not xor
+end
+
 let cond a
     : Bool -> a -> a -> a
     = match
@@ -361,6 +381,11 @@ let foldr a b
         f, z, [] -> z end
 	f, z, List:Cons (x * xs) -> f x (foldr f z xs) end
     end
+end
+
+let flat_map a b
+    : (a -> List b) -> List a -> List b
+    = fn f -> foldr (fn x, acc -> append (f x) acc end) [] end
 end
 
 let scan a b
@@ -519,6 +544,16 @@ let index_of_from (a : Eqable)
     end
 end
 
+let repeat a
+    : Int -> List a -> List a
+    = fn n, s -> cond (lse n 0) [] (append s (repeat (sub n 1) s)) end
+end
+
+let flatten a
+    : List (List a) -> List a
+    = foldr append []
+end
+
 # ============================================================
 
 # Maybe / Either
@@ -673,7 +708,31 @@ class Orderable a is
     let lse
         : a -> a -> Bool
     end
+end
 
+let max (a : Orderable)
+    : a -> a -> a
+    = fn a, b -> cond (gr a b) a b end
+end
+
+let min (a : Orderable)
+    : a -> a -> a
+    = fn a, b -> cond (gr a b) b a end
+end
+
+let clamp (a : Orderable)
+    : a -> a -> a -> a
+    = fn lo, hi, v -> max lo < min hi v end
+end
+
+let abs (a : Orderable, Addable, Subable, Default)
+    : a -> a
+    = fn x -> cond (ls x default) (sub default x) x end
+end
+
+let neg (a : Subable, Default)
+    : a -> a
+    = sub default
 end
 
 class Eqable a is
@@ -725,6 +784,11 @@ class Default a is
     let default
         : a
     end
+end
+
+let is_default (a : Default)
+    : a -> Bool
+    = eq default
 end
 
 # ============================================================
@@ -1672,4 +1736,524 @@ let sum_case a b c
         f, _, (x +) -> f x end
         _, g, (+ y) -> g y end
     end
+end
+
+# ============================================================
+
+# Conversions and bit operations
+
+# ============================================================
+
+# The one value of `Unit`.
+let unit
+    : Unit
+    = undefined
+end
+
+# Unicode code point of a character, and back.
+let ord
+    : Char -> Int
+    = undefined
+end
+
+let chr
+    : Int -> Char
+    = undefined
+end
+
+let int_to_float
+    : Int -> Float
+    = undefined
+end
+
+# Truncates toward zero; saturates at the Int range; NaN is 0.
+let float_to_int
+    : Float -> Int
+    = undefined
+end
+
+# The shortest text that reads back as exactly this Float ("0.1", "1234567.89", "1e+22").
+# Unlike `show`, which keeps 6 digits, nothing is lost. "nan", "inf" and "-inf" for the rest.
+let float_repr
+    : Float -> String
+    = undefined
+end
+
+let bit_and
+    : Int -> Int -> Int
+    = undefined
+end
+
+let bit_or
+    : Int -> Int -> Int
+    = undefined
+end
+
+let bit_xor
+    : Int -> Int -> Int
+    = undefined
+end
+
+# `shift_left x n`: the shift amount is taken mod 32.
+let shift_left
+    : Int -> Int -> Int
+    = undefined
+end
+
+# logical (zero filling)
+let shift_right
+    : Int -> Int -> Int
+    = undefined
+end
+
+# arithmetic (sign extending)
+let shift_right_arith
+    : Int -> Int -> Int
+    = undefined
+end
+
+let bit_not
+    : Int -> Int
+    = flip bit_xor -1
+end
+
+instance Successable Char is
+    let succ
+        : Char -> Char
+        = comp chr (comp (add 1) ord)
+    end
+    let pred
+        : Char -> Char
+        = comp chr (comp (flip sub 1) ord)
+    end
+end
+
+# ============================================================
+
+# Errors from the operating system
+
+# ============================================================
+
+type IOError = NotFound String + PermissionDenied String + AlreadyExists String + IsADirectory String + NotADirectory String + DirectoryNotEmpty String + InvalidInput String + OtherError String + UnexpectedEof String
+end
+
+let io_error_message
+    : IOError -> String
+    = match
+        IOError:NotFound m          -> concat "not found: " m end
+        IOError:PermissionDenied m  -> concat "permission denied: " m end
+        IOError:AlreadyExists m     -> concat "already exists: " m end
+        IOError:IsADirectory m      -> concat "is a directory: " m end
+        IOError:NotADirectory m     -> concat "not a directory: " m end
+        IOError:DirectoryNotEmpty m -> concat "directory not empty: " m end
+        IOError:InvalidInput m      -> concat "invalid input: " m end
+        IOError:OtherError m        -> m end
+        IOError:UnexpectedEof m     -> concat "unexpected end of input: " m end
+    end
+end
+
+instance Showable IOError is
+    let show
+        : IOError -> String
+        = io_error_message
+    end
+end
+
+let io_error_of
+    : Int -> String -> IOError
+    = match
+        1, m -> IOError:NotFound m end
+        2, m -> IOError:PermissionDenied m end
+        3, m -> IOError:AlreadyExists m end
+        4, m -> IOError:IsADirectory m end
+        5, m -> IOError:NotADirectory m end
+        6, m -> IOError:DirectoryNotEmpty m end
+        7, m -> IOError:InvalidInput m end
+        9, m -> IOError:UnexpectedEof m end
+        _, m -> IOError:OtherError m end
+    end
+end
+
+# The runtime answers a fallible request with one string: the first character is a status
+# code (0 = success) and the rest is the payload, or the error message.
+let io_decode
+    : String -> Either IOError String
+    = match
+        []                 -> Either:Left (IOError:OtherError "no answer from the runtime") end
+        List:Cons (c * cs) ->
+            cond (eq (ord c) 0)
+                (Either:Right cs)
+                (Either:Left (io_error_of (ord c) cs))
+        end
+    end
+end
+
+let io_decode_unit
+    : String -> Either IOError Unit
+    = comp (either_map (const unit)) io_decode
+end
+
+# ============================================================
+
+# Files
+
+# ============================================================
+
+# Raw runtime primitives (see src/rtprims.rs). The Int is a mode: bit 0 = bytes instead of
+# UTF-8, bit 1 = append.
+
+let prim_fs_read
+    : String -> Int -> IO String
+    = undefined
+end
+
+let prim_fs_write
+    : String -> String -> Int -> IO String
+    = undefined
+end
+
+# 0 = missing, 1 = file, 2 = directory, 3 = something else
+let prim_fs_kind
+    : String -> IO Int
+    = undefined
+end
+
+let prim_fs_stat
+    : String -> IO String
+    = undefined
+end
+
+let prim_fs_remove
+    : String -> IO String
+    = undefined
+end
+
+let prim_fs_mkdir
+    : String -> IO String
+    = undefined
+end
+
+let prim_fs_list
+    : String -> IO String
+    = undefined
+end
+
+let prim_fs_rename
+    : String -> String -> IO String
+    = undefined
+end
+
+let prim_fs_cwd
+    : IO String
+    = undefined
+end
+
+let prim_fs_chdir
+    : String -> IO String
+    = undefined
+end
+
+let prim_fs_realpath
+    : String -> IO String
+    = undefined
+end
+
+# The whole file as text (decoded from UTF-8; malformed bytes become U+FFFD).
+let read_file
+    : String -> IO (Either IOError String)
+    = fn path -> fmap io_decode (prim_fs_read path 0) end
+end
+
+# Replaces the file's contents (creating it if needed), encoding as UTF-8.
+let write_file
+    : String -> String -> IO (Either IOError Unit)
+    = fn path -> fn text -> fmap io_decode_unit (prim_fs_write path text 0) end end
+end
+
+let append_file
+    : String -> String -> IO (Either IOError Unit)
+    = fn path -> fn text -> fmap io_decode_unit (prim_fs_write path text 2) end end
+end
+
+# Binary variants: every Char is one byte (0..255).
+let read_file_bytes
+    : String -> IO (Either IOError String)
+    = fn path -> fmap io_decode (prim_fs_read path 1) end
+end
+
+let write_file_bytes
+    : String -> String -> IO (Either IOError Unit)
+    = fn path -> fn bytes -> fmap io_decode_unit (prim_fs_write path bytes 1) end end
+end
+
+let append_file_bytes
+    : String -> String -> IO (Either IOError Unit)
+    = fn path -> fn bytes -> fmap io_decode_unit (prim_fs_write path bytes 3) end end
+end
+
+# True for a file, a directory, or anything else that exists.
+let file_exists
+    : String -> IO Bool
+    = fn path -> fmap (neq 0) (prim_fs_kind path) end
+end
+
+let is_file
+    : String -> IO Bool
+    = fn path -> fmap (eq 1) (prim_fs_kind path) end
+end
+
+let is_dir
+    : String -> IO Bool
+    = fn path -> fmap (eq 2) (prim_fs_kind path) end
+end
+
+# ============================================================
+
+# The process: arguments, exit codes, standard streams
+
+# ============================================================
+
+let prim_sys_args
+    : IO String
+    = undefined
+end
+
+# never returns, so its result can be any type
+let prim_sys_exit a
+    : Int -> IO a
+    = undefined
+end
+
+let prim_sys_getenv
+    : String -> IO String
+    = undefined
+end
+
+let prim_sys_environ
+    : IO String
+    = undefined
+end
+
+let prim_sys_pid
+    : IO Int
+    = undefined
+end
+
+let prim_io_flush
+    : IO Unit
+    = undefined
+end
+
+let prim_io_eprint
+    : String -> Int -> IO Unit
+    = undefined
+end
+
+let prim_io_stdin_all
+    : IO String
+    = undefined
+end
+
+let prim_io_getln_opt
+    : IO String
+    = undefined
+end
+
+# "a\0b\0" -> ["a", "b"]
+let split_nuls
+    : String -> List String
+    = match
+        [] -> [] end
+        s  -> List:Cons (take_while (fn c -> neq (ord c) 0 end) s * split_nuls (drop_past_nul s)) end
+    end
+end
+
+let drop_past_nul
+    : String -> String
+    = match
+        []                 -> [] end
+        List:Cons (c * cs) -> cond (eq (ord c) 0) cs (drop_past_nul cs) end
+    end
+end
+
+# The command line arguments, without the program name.
+let args
+    : IO (List String)
+    = fmap split_nuls prim_sys_args
+end
+
+# Runs the rest of the program only after `main` has been given the arguments: the compiler
+# wraps an entry point of type `List String -> IO a` with this.
+let with_args a
+    : (List String -> IO a) -> IO a
+    = fn f -> bind f args end
+end
+
+# Ends the program at once with this exit status (output is flushed first). Usually
+# `main : IO Int` returning the status is all you need; this is for bailing out of the
+# middle of a program.
+let exit
+    : Int -> IO Unit
+    = prim_sys_exit
+end
+
+let flush
+    : IO Unit
+    = prim_io_flush
+end
+
+let eprint
+    : String -> IO Unit
+    = fn s -> prim_io_eprint s 0 end
+end
+
+let eprintln
+    : String -> IO Unit
+    = fn s -> prim_io_eprint s 1 end
+end
+
+# One line of input, or `Nil` once the input has ended.
+let read_line
+    : IO (Maybe String)
+    = fmap (fn r -> get_right (io_decode r) end) prim_io_getln_opt
+end
+
+# Everything left on standard input.
+let read_stdin
+    : IO String
+    = prim_io_stdin_all
+end
+
+# An environment variable.
+let get_env
+    : String -> IO (Maybe String)
+    = fn name -> fmap (fn r -> get_right (io_decode r) end) (prim_sys_getenv name) end
+end
+
+# ============================================================
+
+# Hashing (for HashMap and HashSet)
+
+# ============================================================
+
+# `eq x y` must imply `hash x == hash y`. Any Int is a valid hash.
+class Hashable a is
+    let hash
+        : a -> Int
+    end
+end
+
+# murmur3's 32-bit finalizer: spreads every input bit over the whole result.
+let hash_mix
+    : Int -> Int
+    = comp mix5 (comp mix4 (comp mix3 (comp mix2 mix1)))
+with mix1
+    : Int -> Int
+    = fn h -> bit_xor h (shift_right h 16) end
+with mix2
+    : Int -> Int
+    = flip mul -2048144789
+with mix3
+    : Int -> Int
+    = fn h -> bit_xor h (shift_right h 13) end
+with mix4
+    : Int -> Int
+    = flip mul -1028477387
+with mix5
+    : Int -> Int
+    = fn h -> bit_xor h (shift_right h 16) end
+end
+
+# Folds a second hash into a first (order matters).
+let hash_combine
+    : Int -> Int -> Int
+    = fn a, b -> add (mul a 1000003) b end
+end
+
+instance Hashable Int is
+    let hash
+        : Int -> Int
+        = hash_mix
+    end
+end
+
+instance Hashable Char is
+    let hash
+        : Char -> Int
+        = comp hash_mix ord
+    end
+end
+
+instance Hashable Bool is
+    let hash
+        : Bool -> Int
+        = match
+            Bool:True  -> 1 end
+            Bool:False -> 0 end
+        end
+    end
+end
+
+instance Hashable Unit is
+    let hash
+        : Unit -> Int
+        = const 0
+    end
+end
+
+instance Hashable Float is
+    let hash
+        : Float -> Int
+        = fn x ->
+            hash_mix (hash_combine (float_to_int x) (float_to_int (mul (sub x (int_to_float (float_to_int x))) 1000000.0)))
+          end
+    end
+end
+
+instance Hashable (List a) is
+    let hash (a : Hashable)
+        : List a -> Int
+        = fn xs -> hash_mix (foldl (fn acc, x -> hash_combine acc (hash x) end) 7 xs) end
+    end
+end
+
+instance Hashable (Maybe a) is
+    let hash (a : Hashable)
+        : Maybe a -> Int
+        = match
+            Maybe:Nil   -> 11 end
+            Maybe:Val x -> hash_combine 13 (hash x) end
+        end
+    end
+end
+
+instance Hashable (a * b) is
+    let hash (a : Hashable) (b : Hashable)
+        : (a * b) -> Int
+        = match
+            (x * y) -> hash_mix (hash_combine (hash x) (hash y)) end
+        end
+    end
+end
+
+instance Hashable (Either a b) is
+    let hash (a : Hashable) (b : Hashable)
+        : Either a b -> Int
+        = match
+            Either:Left x  -> hash_combine 17 (hash x) end
+            Either:Right y -> hash_combine 19 (hash y) end
+        end
+    end
+end
+
+# Chains fallible IO: runs the second action with the first one's result, or stops at the
+# first error.
+#
+#     read_file "in.txt" > io_and_then (fn text -> write_file "out.txt" text end)
+let io_and_then a b e
+    : (a -> IO (Either e b)) -> IO (Either e a) -> IO (Either e b)
+    = fn f -> bind (match
+        Either:Left x  -> return (Either:Left x) end
+        Either:Right v -> f v end
+      end) end
 end

@@ -409,6 +409,8 @@ pub struct Lowerer<'l> {
 	aliases: ImHashMap<String, Ty>,
 	errors: Vec<(String, Span)>,
 	current_span: Span,
+	/// The module of the binding being lowered (its canonical name's first segment).
+	current_module: String,
 }
 
 impl<'l> Lowerer<'l> {
@@ -448,6 +450,7 @@ impl<'l> Lowerer<'l> {
 			aliases: env.type_aliases.clone(),
 			errors: Vec::new(),
 			current_span: Span::synthetic(0),
+			current_module: String::new(),
 		}
 	}
 
@@ -538,6 +541,23 @@ impl<'l> Lowerer<'l> {
 					.iter()
 					.filter(|(_, ty)| structurally_compatible(ty, occurrence_ty))
 					.collect();
+				// Several definitions fit: the one in the module being compiled wins, so a library
+				// helper never competes with an identically named, identically typed one elsewhere.
+				let prefix = format!("{}:", self.current_module);
+				let local: Vec<&(Name, Ty)> = matches
+					.iter()
+					.copied()
+					.filter(|(n, _)| n.starts_with(&prefix))
+					.collect();
+				let matches = if matches.len() > 1 && local.len() == 1 { local } else { matches };
+				// Instance methods are named after their type (`List:show`), not their module. Only
+				// the Prelude is visible bare outside a module, so there the Prelude's definition wins.
+				let prelude: Vec<&(Name, Ty)> = matches
+					.iter()
+					.copied()
+					.filter(|(n, _)| n.starts_with("Prelude:"))
+					.collect();
+				let matches = if matches.len() > 1 && prelude.len() == 1 { prelude } else { matches };
 				match matches.as_slice() {
 					[one] => Atom::Global(one.0.clone(), occurrence_ty.clone()),
 					[] => {
@@ -1221,6 +1241,7 @@ impl<'l> Lowerer<'l> {
 
 	fn lower_binding(&mut self, name: &str, e: &TypedExpr, span: Span) -> Function {
 		self.current_span = span;
+		self.current_module = name.split(':').next().unwrap_or("").to_string();
 		let mut params: Vec<(Name, Ty)> = Vec::new();
 		let mut env = HashMap::new();
 		let mut cur = e;

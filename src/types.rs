@@ -138,12 +138,62 @@ impl TypeInfo {
 		}
 	}
 
+	pub fn structural_norm(&self, t: &Ty) -> Ty {
+		fn go(ti: &TypeInfo, t: &Ty, expanding: &mut Vec<String>) -> Ty {
+			match t {
+				Ty::Named(n) => {
+					if expanding.contains(n) {
+						return t.clone();
+					}
+
+					let Some(def) = ti.aliases.get(n) else {
+						return t.clone();
+					};
+
+					expanding.push(n.clone());
+					let result = go(ti, def, expanding);
+					expanding.pop();
+					result
+				}
+
+				Ty::Fn(a, b) => Ty::Fn(
+					Box::new(go(ti, a, expanding)),
+					Box::new(go(ti, b, expanding)),
+				),
+
+				Ty::Product(a, b) => Ty::Product(
+					Box::new(go(ti, a, expanding)),
+					Box::new(go(ti, b, expanding)),
+				),
+
+				Ty::Sum(a, b) => Ty::Sum(
+					Box::new(go(ti, a, expanding)),
+					Box::new(go(ti, b, expanding)),
+				),
+
+				Ty::App(a, b) => Ty::App(
+					Box::new(go(ti, a, expanding)),
+					Box::new(go(ti, b, expanding)),
+				),
+
+				other => other.clone(),
+			}
+		}
+
+		go(self, t, &mut Vec::new())
+	}
+
 	pub fn instance_head(&self, ty: &Ty) -> String {
 		let t = self.norm(ty);
 		match spine(&t).0 {
 			Ty::Named(n) => n.clone(),
 			_ => ty_head_name(&t),
 		}
+	}
+
+	pub fn structural_instance_head(&self, ty: &Ty) -> String {
+		let t = self.structural_norm(ty);
+		ty_head_name(&t)
 	}
 
 	pub fn alias_heads(&self, head: &str) -> Vec<String> {

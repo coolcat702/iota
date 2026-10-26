@@ -140,6 +140,7 @@ pub struct CodeGen<'ctx, 'p> {
 	jobs: Vec<Job<'ctx>>,
 	counter: usize,
 	helpers: Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)>,
+	to_sb_fn: Option<FunctionValue<'ctx>>,
 }
 
 impl<'ctx, 'p> CodeGen<'ctx, 'p> {
@@ -174,6 +175,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 			jobs: Vec::new(),
 			counter: 0,
 			helpers: None,
+			to_sb_fn: None,
 		}
 	}
 
@@ -604,11 +606,16 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		let bj = self.new_bb(f, "tag.join");
 		ok!(self.b.build_conditional_branch(self.is_imm(p), bi, bh));
 		self.b.position_at_end(bi);
-		let t1 = ok!(self.b.build_int_truncate(
-			ok!(self
-				.b
-				.build_right_shift(self.p2i(p), self.i64c(1), false, "")),
-			i32t,
+		// an immediate holds `((tag + 1) << 1) | 1`
+		let t1 = ok!(self.b.build_int_sub(
+			ok!(self.b.build_int_truncate(
+				ok!(self
+					.b
+					.build_right_shift(self.p2i(p), self.i64c(1), false, "")),
+				i32t,
+				""
+			)),
+			self.i32c(1),
 			""
 		));
 		ok!(self.b.build_unconditional_branch(bj));
@@ -1206,6 +1213,12 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 			.expect("program uses strings but the prelude defines no list type")
 	}
 
+	/// `iota.to_sb(list) -> StrBuf*`: see `list_helpers`.
+	fn to_sb_helper(&mut self) -> FunctionValue<'ctx> {
+		self.list_helpers();
+		self.to_sb_fn.expect("list_helpers builds to_sb")
+	}
+
 	// `(from_buf(ptr buf, i64 len) -> List Char, print_list(List Char, i32 newline) -> void)`
 	fn list_helpers(&mut self) -> (FunctionValue<'ctx>, FunctionValue<'ctx>) {
 		if let Some(h) = self.helpers {
@@ -1269,22 +1282,19 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 			ok!(self.b.build_return(Some(&r)));
 		}
 
-		// print_list: force the list cell-by-cell, then print
-		let print_f = self.m.add_function(
-			FN_PRINT_LIST,
-			self.ctx
-				.void_type()
-				.fn_type(&[ptr.into(), i32t.into()], false),
-			None,
-		);
+		// to_sb: force the list cell-by-cell into a fresh StrBuf and return it. Consumes the
+		// list. (Nothing is observable until the whole list has been forced, so an error while
+		// evaluating the tail leaves no half-done effect behind.)
+		let to_sb_f = self
+			.m
+			.add_function(FN_TO_SB, ptr.fn_type(&[ptr.into()], false), None);
 		{
-			let e = self.new_bb(print_f, "entry");
-			let lp = self.new_bb(print_f, "loop");
-			let cell = self.new_bb(print_f, "cell");
-			let done = self.new_bb(print_f, "done");
+			let e = self.new_bb(to_sb_f, "entry");
+			let lp = self.new_bb(to_sb_f, "loop");
+			let cell = self.new_bb(to_sb_f, "cell");
+			let done = self.new_bb(to_sb_f, "done");
 			self.b.position_at_end(e);
-			let list = print_f.get_nth_param(0).unwrap();
-			let nl = print_f.get_nth_param(1).unwrap();
+			let list = to_sb_f.get_nth_param(0).unwrap();
 			let sb_new = self.rt(RT_SB_NEW, Some(ptr.into()), &[]);
 			let sb = self.call(sb_new, &[]).unwrap();
 			let cur = ok!(self.b.build_alloca(ptr, "cur"));
@@ -1310,6 +1320,23 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 			ok!(self.b.build_store(cur, next));
 			ok!(self.b.build_unconditional_branch(lp));
 			self.b.position_at_end(done);
+			ok!(self.b.build_return(Some(&sb)));
+		}
+
+		// print_list: force the list, then print it
+		let print_f = self.m.add_function(
+			FN_PRINT_LIST,
+			self.ctx
+				.void_type()
+				.fn_type(&[ptr.into(), i32t.into()], false),
+			None,
+		);
+		{
+			let e = self.new_bb(print_f, "entry");
+			self.b.position_at_end(e);
+			let list = print_f.get_nth_param(0).unwrap();
+			let nl = print_f.get_nth_param(1).unwrap();
+			let sb = self.call(to_sb_f, &[list]).unwrap();
 			let pr = self.rt(RT_PRINT_SB, None, &[ptr.into(), i32t.into()]);
 			self.call(pr, &[sb, nl]);
 			ok!(self.b.build_return(None));
@@ -1317,6 +1344,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		if let Some(bb) = saved {
 			self.b.position_at_end(bb);
 		}
+		self.to_sb_fn = Some(to_sb_f);
 		self.helpers = Some((from_f, print_f));
 		(from_f, print_f)
 	}
@@ -1780,18 +1808,110 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 				));
 				bool_result(self, c)
 			}
-			ShowInt | ShowFloat => {
+			ShowInt | ShowFloat | FloatRepr => {
 				let len = self.entry_alloca(st.func, i64t.into());
-				let (name, pty): (&str, BasicMetadataTypeEnum<'ctx>) = if p == ShowInt {
-					(RT_SHOW_INT, i32t.into())
-				} else {
-					(RT_SHOW_FLOAT, self.ctx.f64_type().into())
+				let (name, pty): (&str, BasicMetadataTypeEnum<'ctx>) = match p {
+					ShowInt => (RT_SHOW_INT, i32t.into()),
+					ShowFloat => (RT_SHOW_FLOAT, self.ctx.f64_type().into()),
+					_ => (RT_FLOAT_REPR, self.ctx.f64_type().into()),
 				};
 				let f = self.rt(name, Some(ptr.into()), &[pty, ptr.into()]);
 				let buf = self.call(f, &[a[0], len.into()]).unwrap();
 				let n = ok!(self.b.build_load(i64t, len, ""));
 				let (from_f, _) = self.list_helpers();
 				self.call(from_f, &[buf, n]).unwrap()
+			}
+			IAnd => ok!(self
+				.b
+				.build_and(a[0].into_int_value(), a[1].into_int_value(), ""))
+			.into(),
+			IOr => ok!(self
+				.b
+				.build_or(a[0].into_int_value(), a[1].into_int_value(), ""))
+			.into(),
+			IXor => ok!(self
+				.b
+				.build_xor(a[0].into_int_value(), a[1].into_int_value(), ""))
+			.into(),
+			// the shift amount is taken mod 32 (LLVM makes an oversized shift poison)
+			IShl | IShr | ISar => {
+				let n = ok!(self
+					.b
+					.build_and(a[1].into_int_value(), i32t.const_int(31, false), ""));
+				let x = a[0].into_int_value();
+				match p {
+					IShl => ok!(self.b.build_left_shift(x, n, "")).into(),
+					IShr => ok!(self.b.build_right_shift(x, n, false, "")).into(),
+					_ => ok!(self.b.build_right_shift(x, n, true, "")).into(),
+				}
+			}
+			// Char and Int are both i32
+			CharOrd | CharChr => a[0],
+			IToF => ok!(self.b.build_signed_int_to_float(
+				a[0].into_int_value(),
+				self.ctx.f64_type(),
+				""
+			))
+			.into(),
+			FToI => {
+				let f = self.rt(RT_FTOI, Some(i32t.into()), &[self.ctx.f64_type().into()]);
+				self.call(f, &[a[0]]).unwrap()
+			}
+			Rt(i) => {
+				use crate::rtprims::{self, Kind};
+				let sig = rtprims::get(i);
+				let f64t = self.ctx.f64_type();
+				let mut cargs: Vec<BasicValueEnum<'ctx>> = Vec::new();
+				let mut ptys: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
+				for (k, kind) in sig.args.iter().enumerate() {
+					match kind {
+						Kind::Int => {
+							cargs.push(a[k]);
+							ptys.push(i32t.into());
+						}
+						Kind::Float => {
+							cargs.push(a[k]);
+							ptys.push(f64t.into());
+						}
+						Kind::Str => {
+							// force the whole list into a StrBuf; the C function owns it
+							let to_sb = self.to_sb_helper();
+							let sb = self.call(to_sb, &[a[k]]).unwrap();
+							cargs.push(sb);
+							ptys.push(ptr.into());
+						}
+						Kind::Unit => unreachable!("`{}`: Unit is only a result kind", sig.key),
+					}
+				}
+				match sig.ret {
+					Kind::Unit => {
+						let f = self.rt(sig.c, None, &ptys);
+						self.call(f, &cargs);
+						// `exit` is typed `IO a`: it never returns, so any value will do
+						match ty {
+							MTy::Unit => self.unit(),
+							t => self.lty(t).const_zero(),
+						}
+					}
+					Kind::Int => {
+						let f = self.rt(sig.c, Some(i32t.into()), &ptys);
+						self.call(f, &cargs).unwrap()
+					}
+					Kind::Float => {
+						let f = self.rt(sig.c, Some(f64t.into()), &ptys);
+						self.call(f, &cargs).unwrap()
+					}
+					Kind::Str => {
+						let len = self.entry_alloca(st.func, i64t.into());
+						cargs.push(len.into());
+						ptys.push(ptr.into());
+						let f = self.rt(sig.c, Some(ptr.into()), &ptys);
+						let buf = self.call(f, &cargs).unwrap();
+						let n = ok!(self.b.build_load(i64t, len, ""));
+						let (from_f, _) = self.list_helpers();
+						self.call(from_f, &[buf, n]).unwrap()
+					}
+				}
 			}
 			Print | Println => {
 				let (_, print_f) = self.list_helpers();
@@ -1806,7 +1926,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 				let (from_f, _) = self.list_helpers();
 				self.call(from_f, &[buf, n]).unwrap()
 			}
-			IoReturn | IoBind | SumLeft | SumRight => {
+			IoReturn | IoBind | SumLeft | SumRight | UnitVal => {
 				unreachable!("{:?} is synthesized by lower.rs, not a primitive", p)
 			}
 		}
@@ -1981,9 +2101,18 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 				let mut cases = Vec::new();
 				for (i, m) in arms.iter().enumerate() {
 					if let MPat::Ctor(c) = &m.pat {
-						let t = self.prog.datas[*id]
-							.tag_of(c)
-							.expect("unknown ctor in case");
+						// let t = self.prog.datas[*id]
+						// 	.tag_of(c)
+						// 	.expect("unknown ctor in case");
+						let t = self.prog.datas[*id].tag_of(c).unwrap_or_else(|| {
+							panic!(
+        "unknown ctor `{}` in case on `{:?}` : data `{}` (id {}) in fn `{}`; ctors = {:?}",
+        c, a,
+        self.prog.datas[*id].name, id,
+        f.get_name().to_string_lossy(),
+        self.prog.datas[*id].ctors.iter().map(|c| &c.name).collect::<Vec<_>>()
+    )
+						});
 						cases.push((self.i32c(t as u64), blocks[i]));
 					}
 				}

@@ -184,14 +184,18 @@ impl<'a> Spec<'a> {
 			Atom::Method(m, t) => {
 				let t = self.concrete(t, tsub);
 				match self.resolve_method(m, &t) {
-					Some(c) => Atom::Global(self.request(&c, &t), t),
+					Some((c, None)) => Atom::Global(self.request(&c, &t), t),
+					Some((c, Some(at))) => match self.structural_wrapper(m, &c, &at, &t) {
+						Some(w) => Atom::Global(w, t),
+						None => Atom::Lit(crate::parser::Literal::Int(0)),
+					},
 					None => Atom::Lit(crate::parser::Literal::Int(0)),
 				}
 			}
 		}
 	}
 
-	fn resolve_method(&mut self, m: &str, ty: &Ty) -> Option<Name> {
+	fn resolve_method(&mut self, m: &str, ty: &Ty) -> Option<(Name, Option<Ty>)> {
 		let Some((generic, class_var)) = self.ov.methods.get(m) else {
 			self.err(format!("`{}` is not a known class method", m));
 			return None;
@@ -218,10 +222,17 @@ impl<'a> Spec<'a> {
 			.filter(|h| self.ti.norm(&Ty::Named(h.clone())) == at_norm)
 			.collect();
 		tried.push(head.clone());
+		// Fall back to the structural type head
+		let structural_head = self.ti.structural_instance_head(at);
+		if !tried.contains(&structural_head) {
+			tried.push(structural_head.clone());
+		}
 		for h in &tried {
 			let canonical = format!("{}:{}", h, m);
 			if self.ov.canonical.contains(&canonical) {
-				return Some(canonical);
+				let wrap =
+					*h == structural_head && *h != head && self.ti.type_ctors.contains_key(&head);
+				return Some((canonical, wrap.then(|| at.clone())));
 			}
 		}
 		let shown = display_ty(at);
@@ -274,5 +285,277 @@ impl<'a> Spec<'a> {
 					.collect(),
 			),
 		}
+	}
+
+	fn sum_ty(tys: &[Ty]) -> Ty {
+		match tys {
+			[] => Ty::Unit,
+			[t] => t.clone(),
+			[t, rest @ ..] => Ty::Sum(Box::new(t.clone()), Box::new(Self::sum_ty(rest))),
+		}
+	}
+
+	// (canonical ctor, payload type) in the same order the backend uses for tags
+	fn nominal_ctors(&self, at: &Ty) -> Option<Vec<(String, Option<Ty>)>> {
+		let t = self.ti.norm(at);
+		let (h, args) = crate::types::spine(&t);
+		let Ty::Named(n) = h else { return None };
+		let mut out = Vec::new();
+		for c in self.ti.type_ctors.get(n)? {
+			let canon = format!("{}:{}", n, c);
+			let sch = self.ti.ctor_scheme.get(&canon)?;
+			let (p, r) = match &sch.ty {
+				Ty::Fn(p, r) => (Some((**p).clone()), (**r).clone()),
+				r => (None, r.clone()),
+			};
+			let mut m = HashMap::new();
+			for (ra, a) in crate::types::spine(&r).1.iter().zip(args.iter()) {
+				if let Ty::Var(v) = ra {
+					m.insert(*v, (**a).clone());
+				}
+			}
+			out.push((canon, p.map(|p| subst_ty(&p, &m))));
+		}
+		Some(out)
+	}
+
+	fn from_body(
+		&self,
+		ctors: &[(String, Option<Ty>)],
+		ptys: &[Ty],
+		v: &str,
+		at: &Ty,
+		depth: usize,
+	) -> Expr {
+		use crate::lang::LangItem;
+		let make = |canon: &str, payload: Option<Atom>| {
+			let o = format!("o{}", depth);
+			Expr::Let(
+				o.clone(),
+				at.clone(),
+				Value::Ctor(canon.to_string(), payload),
+				Box::new(Expr::Halt(Atom::Var(o))),
+			)
+		};
+		let (c0, p0) = &ctors[0];
+		if ctors.len() == 1 {
+			return make(c0, p0.as_ref().map(|_| Atom::Var(v.to_string())));
+		}
+		let u = format!("u{}", depth);
+		let left_body = Expr::Let(
+			u.clone(),
+			ptys[0].clone(),
+			Value::Unwrap(Atom::Var(v.to_string())),
+			Box::new(make(c0, p0.as_ref().map(|_| Atom::Var(u.clone())))),
+		);
+		let w = format!("w{}", depth);
+		let right_body = Expr::Let(
+			w.clone(),
+			Self::sum_ty(&ptys[1..]),
+			Value::Unwrap(Atom::Var(v.to_string())),
+			Box::new(self.from_body(&ctors[1..], &ptys[1..], &w, at, depth + 1)),
+		);
+		Expr::Case(
+			Atom::Var(v.to_string()),
+			vec![
+				Arm {
+					pat: CasePat::Ctor(self.lang.item(LangItem::SumLeft).to_string()),
+					body: left_body,
+				},
+				Arm {
+					pat: CasePat::Ctor(self.lang.item(LangItem::SumRight).to_string()),
+					body: right_body,
+				},
+			],
+		)
+	}
+
+	// (to_repr, from_repr, repr type) for nominal type `at`, emitted once per type
+	fn repr_fns(&mut self, at: &Ty) -> Option<(Name, Name, Ty)> {
+		use crate::lang::LangItem;
+		let ctors = self.nominal_ctors(at)?;
+		let ptys: Vec<Ty> = ctors
+			.iter()
+			.map(|(_, p)| p.clone().unwrap_or(Ty::Unit))
+			.collect();
+		let repr = Self::sum_ty(&ptys);
+		let at = self.ti.norm(at);
+		let key = ("repr$to".to_string(), display_ty(&at));
+		if let Some(to) = self.instances.get(&key).cloned() {
+			let from = self.instances[&("repr$from".to_string(), display_ty(&at))].clone();
+			return Some((to, from, repr));
+		}
+		self.counter += 1;
+		let (to, from) = (
+			format!("repr_to${}", self.counter),
+			format!("repr_from${}", self.counter),
+		);
+		self.instances.insert(key, to.clone());
+		self.instances
+			.insert(("repr$from".to_string(), display_ty(&at)), from.clone());
+
+		// nullary payloads need a Unit value; the prelude's `unit` constant provides it
+		let unit_fn = self.request("Prelude:unit", &Ty::Unit);
+		let unit = Atom::Global(unit_fn, Ty::Unit);
+		let left = self.lang.item(LangItem::SumLeft).to_string();
+		let right = self.lang.item(LangItem::SumRight).to_string();
+		let n = ctors.len();
+
+		let mut arms = Vec::new();
+		for (i, (canon, p)) in ctors.iter().enumerate() {
+			let mut stmts: Vec<(Name, Ty, Value)> = Vec::new();
+			let mut cur = match p {
+				Some(pt) => {
+					stmts.push(("p".into(), pt.clone(), Value::Unwrap(Atom::Var("x".into()))));
+					Atom::Var("p".into())
+				}
+				None => unit.clone(),
+			};
+			if i < n - 1 {
+				stmts.push((
+					"l".into(),
+					Self::sum_ty(&ptys[i..]),
+					Value::Ctor(left.clone(), Some(cur)),
+				));
+				cur = Atom::Var("l".into());
+			}
+			for j in (0..i).rev() {
+				let v = format!("r{}", j);
+				stmts.push((
+					v.clone(),
+					Self::sum_ty(&ptys[j..]),
+					Value::Ctor(right.clone(), Some(cur)),
+				));
+				cur = Atom::Var(v);
+			}
+			let body = stmts
+				.into_iter()
+				.rev()
+				.fold(Expr::Halt(cur), |acc, (n, t, v)| {
+					Expr::Let(n, t, v, Box::new(acc))
+				});
+			arms.push(Arm {
+				pat: CasePat::Ctor(canon.clone()),
+				body,
+			});
+		}
+		let params = vec![("x".to_string(), at.clone())];
+		self.out_funcs.push(Function {
+			name: to.clone(),
+			ty: fn_chain(&params, &repr),
+			params,
+			ret: repr.clone(),
+			body: Expr::Case(Atom::Var("x".into()), arms),
+			span: self.span,
+		});
+
+		let params = vec![("x".to_string(), repr.clone())];
+		self.out_funcs.push(Function {
+			name: from.clone(),
+			ty: fn_chain(&params, &at),
+			params,
+			ret: at.clone(),
+			body: self.from_body(&ctors, &ptys, "x", &at, 0),
+			span: self.span,
+		});
+		Some((to, from, repr))
+	}
+
+	fn structural_wrapper(&mut self, m: &str, canon: &str, at: &Ty, occ: &Ty) -> Option<Name> {
+		let key = (format!("{}~repr", m), display_ty(occ));
+		if let Some(n) = self.instances.get(&key) {
+			return Some(n.clone());
+		}
+		let (generic, cv) = self.ov.methods.get(m)?.clone();
+		let generic = self.ti.norm(&generic);
+		let (to, from, repr) = self.repr_fns(at)?;
+		let at = self.ti.norm(at);
+
+		self.counter += 1;
+		let name = format!("{}~repr${}", canon, self.counter);
+		self.instances.insert(key, name.clone()); // before building: recursive types
+
+		let mut bound = HashMap::new();
+		match_ty(&generic, occ, &mut bound);
+		let mut at_repr = bound.clone();
+		at_repr.insert(cv, repr.clone());
+		let inner_ty = self.concrete(&generic, &at_repr);
+		let inst = self.request(canon, &inner_ty);
+
+		let arity = self.funcs.get(canon)?.params.len();
+		let (ptys_g, ret_g) = peel_fn(&generic, arity);
+		let var = Ty::Var(cv);
+		let mentions = |t: &Ty| {
+			let mut one = HashMap::new();
+			one.insert(cv, Ty::Unit);
+			subst_ty(t, &one) != *t
+		};
+		for t in ptys_g.iter().chain(std::iter::once(&ret_g)) {
+			if *t != var && mentions(t) {
+				self.err(format!(
+                "structural instance of `{}` for {}: the class type may only appear bare in the method's signature",
+                m, display_ty(&at)
+            ));
+				return None;
+			}
+		}
+
+		let (to_ty, from_ty) = (
+			Ty::Fn(Box::new(at.clone()), Box::new(repr.clone())),
+			Ty::Fn(Box::new(repr.clone()), Box::new(at.clone())),
+		);
+		let mut lets: Vec<(Name, Ty, Value)> = Vec::new();
+		let mut args = Vec::new();
+		let mut params = Vec::new();
+		for (i, pg) in ptys_g.iter().enumerate() {
+			let p = format!("p{}", i);
+			params.push((p.clone(), self.concrete(pg, &bound)));
+			if *pg == var {
+				let r = format!("r{}", i);
+				lets.push((
+					r.clone(),
+					repr.clone(),
+					Value::App(Atom::Global(to.clone(), to_ty.clone()), Atom::Var(p)),
+				));
+				args.push(Atom::Var(r));
+			} else {
+				args.push(Atom::Var(p));
+			}
+		}
+		let mut f = Atom::Global(inst, inner_ty.clone());
+		let mut f_ty = inner_ty;
+		for (i, a) in args.into_iter().enumerate() {
+			let Ty::Fn(_, rest) = f_ty.clone() else {
+				return None;
+			};
+			let h = format!("h{}", i);
+			lets.push((h.clone(), (*rest).clone(), Value::App(f, a)));
+			f = Atom::Var(h);
+			f_ty = *rest;
+		}
+		if ret_g == var {
+			lets.push((
+				"out".into(),
+				at.clone(),
+				Value::App(Atom::Global(from, from_ty), f),
+			));
+			f = Atom::Var("out".into());
+		}
+		let body = lets
+			.into_iter()
+			.rev()
+			.fold(Expr::Halt(f), |acc, (n, t, v)| {
+				Expr::Let(n, t, v, Box::new(acc))
+			});
+		let ret = self.concrete(&ret_g, &bound);
+		self.out_funcs.push(Function {
+			name: name.clone(),
+			ty: fn_chain(&params, &ret),
+			params,
+			ret,
+			body,
+			span: self.span,
+		});
+		Some(name)
 	}
 }
