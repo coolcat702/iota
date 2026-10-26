@@ -1,0 +1,1017 @@
+module Main is
+
+# a connect-4 game with 3 levels of ai
+
+import file std/ansi.iota
+import file std/term.iota
+import file std/rng.iota
+import file std/time.iota
+import file std/str.iota
+import file std/search.iota
+
+type Level = Easy + Medium + Hard
+end
+
+type Opp = Human + Bot Level
+end
+
+# what a key press means
+type Act = GoPrev + GoNext + Accept + PickNum Int + Leave + Redraw + Ignore
+end
+
+# 1 is red, 2 is yellow
+type Board = List (List Int)
+end
+
+# small helpers
+
+let spaces
+    : Int -> String
+    = fn n -> repeat n " " end
+end
+
+let fill
+    : Int -> Int -> List Int
+    = fn n, x -> cond (lse n 0) [] (List:Cons (x * fill (pred n) x)) end
+end
+
+# `sliding 4 [1,2,3,4,5]` is [[1,2,3,4], [2,3,4,5]]
+let sliding a
+    : Int -> List a -> List (List a)
+    = fn n, xs -> cond (ls (len xs) n) [] (List:Cons (take n xs * sliding n (drop 1 xs))) end
+end
+
+let nth_or a
+    : a -> Int -> List a -> a
+    = match
+        d, _, []                 -> d end
+        _, 0, List:Cons (x * _)  -> x end
+        d, i, List:Cons (_ * xs) -> nth_or d (pred i) xs end
+    end
+end
+
+let update_nth a
+    : Int -> (a -> a) -> List a -> List a
+    = match
+        _, _, []                 -> [] end
+        0, f, List:Cons (x * xs) -> List:Cons (f x * xs) end
+        i, f, List:Cons (x * xs) -> List:Cons (x * update_nth (pred i) f xs) end
+    end
+end
+
+let other
+    : Int -> Int
+    = sub 3
+end
+
+# board and rules
+
+let empty_board
+    : Board
+    = repeat 7 [[]]
+end
+
+# order columns are tried in (middle first, best order for pruning)
+let move_order
+    : List Int
+    = [3, 2, 4, 1, 5, 0, 6]
+end
+
+let column
+    : Board -> Int -> List Int
+    = flip (nth_or [])
+end
+
+let can_play
+    : Board -> Int -> Bool
+    = comp2 (comp (gr 6) len) column
+end
+
+let legal_moves
+    : Board -> List Int
+    = comp (flip filter move_order) can_play
+end
+
+let is_full
+    : Board -> Bool
+    = Search:all < comp (eq 6) len
+end
+
+let drop_piece
+    : Int -> Int -> Board -> Board
+    = fn c, p, b -> update_nth c (fn col -> append col [p] end) b end
+end
+
+let cell
+    : Board -> Int -> Int -> Int
+    = fn b, c, r ->
+        cond (or (or (ls c 0) (gr c 6)) (or (ls r 0) (gr r 5)))
+            0
+            (nth_or 0 r < column b c)
+    end
+end
+
+# every row of 4 cells that could hold a win
+# 21 vertical
+# 24 horizontal
+# 24 diagonal
+# columns are padded to 6
+let all_windows
+    : Board -> List (List Int)
+    = comp windows_of < map fn col -> append col < fill (sub 6 < len col) 0 end
+end
+
+let windows_of
+    : List (List Int) -> List (List Int)
+    = fn cols -> append (flat_map (sliding 4) cols) (flat_map group_windows < sliding 4 cols) end
+end
+
+# the horizontal and diagonal windows in 4 neighboring columns
+let group_windows
+    : List (List Int) -> List (List Int)
+    = match
+        List:Cons (c0 * List:Cons (c1 * List:Cons (c2 * List:Cons (c3 * [])))) -> flatten [
+            zip4 c0 c1 c2 c3,
+            zip4 c0 (drop 1 c1) (drop 2 c2) (drop 3 c3),
+            zip4 (drop 3 c0) (drop 2 c1) (drop 1 c2) c3
+        ] end
+        _ -> [] end
+    end
+end
+
+let zip4
+    : List Int -> List Int -> List Int -> List Int -> List (List Int)
+    = match
+        List:Cons (a * ra), List:Cons (b * rb), List:Cons (c * rc), List:Cons (d * rd) ->
+            List:Cons ([a, b, c, d] * zip4 ra rb rc rd)
+        end
+        _, _, _, _ -> [] end
+    end
+end
+
+let count_of
+    : Int -> List Int -> Int
+    = comp2 len < comp filter eq
+end
+
+# 1 or 2 if that player has four in a row, else 0
+let winner_of
+    : List (List Int) -> Int
+    = fn ws ->
+        cond (Search:any (comp (eq 4) (count_of 1)) ws) 1
+      < cond (Search:any (comp (eq 4) (count_of 2)) ws) 2 0
+    end
+end
+
+# how good a position is for red from the windows that only one side can use
+# more disks is better
+let window_value
+    : List Int -> Int
+    = fork window_score (count_of 1) (count_of 2)
+end
+
+let window_score
+    : Int -> Int -> Int
+    = fn n1, n2 ->
+        cond (and (gr n1 0) (gr n2 0)) 0
+      < cond (gr n1 0) (potential n1)
+      < cond (gr n2 0) (neg < potential n2) 0
+    end
+end
+
+let potential
+    : Int -> Int
+    = fn n ->
+        cond (eq n 1) 1
+      < cond (eq n 2) 4
+      < cond (eq n 3) 20 1000
+    end
+end
+
+# red score: windows plus a bit for the center column
+let score_of
+    : Board -> List (List Int) -> Int
+    = fn b, ws ->
+        add (foldl add 0 < map window_value ws)
+            (mul 3 < sub (count_of 1 < column b 3) (count_of 2 < column b 3))
+    end
+end
+
+# AI
+
+let inf
+    : Int
+    = 1000000
+end
+
+let perspective
+    : Int -> Int -> Int
+    = fn p -> cond (eq 1 p) id neg end
+end
+
+# Negamax with α-β pruning: the value of the position for the player `p` who is
+# about to move, looking `d` moves ahead. Whoever just moved may have won already, which
+# is a loss for `p` (and a faster loss is worse).
+let negamax
+    : Board -> Int -> Int -> Int -> Int -> Int
+    = fn b, p, d, alpha, beta -> node b p d alpha beta < all_windows b end
+end
+
+let node
+    : Board -> Int -> Int -> Int -> Int -> List (List Int) -> Int
+    = fn b, p, d, alpha, beta, ws ->
+        cond (neq 0 < winner_of ws) (neg < add 100000 d)
+      < cond (is_full b) 0
+      < cond (eq d 0) (perspective p < score_of b ws)
+      < search b p d alpha beta (legal_moves b) (neg inf)
+    end
+end
+
+let search
+    : Board -> Int -> Int -> Int -> Int -> List Int -> Int -> Int
+    = match
+        _, _, _, _, _, [], best -> best end
+        b, p, d, alpha, beta, List:Cons (c * rest), best ->
+            searched b p d alpha beta rest best < neg < negamax (drop_piece c p b) (other p) (pred d) (neg beta) (neg alpha)
+        end
+    end
+end
+
+# `v` is the value of the move just tried: keep the best, and stop when it already beats
+# what the opponent would allow
+let searched
+    : Board -> Int -> Int -> Int -> Int -> List Int -> Int -> Int -> Int
+    = fn b, p, d, alpha, beta, rest, best, v ->
+        cond (gre (max alpha v) beta)
+            (max best v)
+            (search b p d (max alpha v) beta rest < max best v)
+    end
+end
+
+# The value of every legal move at the root. Moves worse than the best so far come back
+# as bounds rather than exact values, so only the best ones are exact (and can be told apart).
+let root_scan
+    : Board -> Int -> Int -> List Int -> Int -> List (Int * Int)
+    = match
+        _, _, _, [], _ -> [] end
+        b, p, d, List:Cons (c * rest), best ->
+            root_next b p d c rest best < neg < negamax (drop_piece c p b) (other p) (pred d) (neg inf) (neg < pred best)
+        end
+    end
+end
+
+let root_next
+    : Board -> Int -> Int -> Int -> List Int -> Int -> Int -> List (Int * Int)
+    = fn b, p, d, c, rest, best, v ->
+        List:Cons ((c * v) * root_scan b p d rest (max best v))
+    end
+end
+
+# one of the columns, chosen at random
+let choose_from
+    : List Int -> Gen -> (Int * Gen)
+    = fn cols, g -> picked cols < Rng:int_range 0 (len cols) g end
+end
+
+let picked
+    : List Int -> (Int * Gen) -> (Int * Gen)
+    = fn cols -> match
+        (i * g2) -> (nth_or 3 i cols * g2) end
+    end end
+end
+
+# among the moves with the best value, a random one
+let pick_best
+    : List (Int * Int) -> Gen -> (Int * Gen)
+    = fn scored ->
+        choose_from < map fst < filter (comp (eq < foldl max (neg inf) (map rst scored)) rst) scored
+    end
+end
+
+let search_move
+    : Int -> Board -> Int -> Gen -> (Int * Gen)
+    = fn d, b, p -> pick_best (root_scan b p d (legal_moves b) (neg inf)) end
+end
+
+let random_move
+    : Board -> Gen -> (Int * Gen)
+    = comp choose_from legal_moves
+end
+
+# does dropping a disk here win at once?
+let wins_now
+    : Board -> Int -> Int -> Bool
+    = fn b, p, c -> eq p (winner_of < all_windows < drop_piece c p b) end
+end
+
+# Easy: mostly random, and only sometimes spots a win that is lying on the table.
+let easy_move
+    : Board -> Int -> Gen -> (Int * Gen)
+    = fn b, p, g -> easy_pick b p (Search:find (wins_now b p) (legal_moves b)) (Rng:int_range 0 100 g) end
+end
+
+let easy_pick
+    : Board -> Int -> Maybe Int -> (Int * Gen) -> (Int * Gen)
+    = fn b, p, win -> match
+        (roll * g2) -> easy_choice b win roll g2 end
+    end end
+end
+
+let easy_choice
+    : Board -> Maybe Int -> Int -> Gen -> (Int * Gen)
+    = match
+        b, Maybe:Val c, roll, g -> cond (ls roll 60) (c * g) (random_move b g) end
+        b, Maybe:Nil, _, g      -> random_move b g end
+    end
+end
+
+# Medium: looks 2 moves ahead (sees wins and traps coming), but sometimes plays
+# a random column.
+let medium_move
+    : Board -> Int -> Gen -> (Int * Gen)
+    = fn b, p, g -> medium_roll b p < Rng:int_range 0 100 g end
+end
+
+let medium_roll
+    : Board -> Int -> (Int * Gen) -> (Int * Gen)
+    = fn b, p -> match
+        (roll * g2) -> cond (ls roll 10) (easy_move b 0 g2) (search_move 2 b p g2) end
+    end end
+end
+
+# Hard: looks 5 moves ahead.
+let hard_move
+    : Board -> Int -> Gen -> (Int * Gen)
+    = search_move 5
+end
+
+# the column the computer, playing `p`, drops its disk in
+let ai_move
+    : Level -> Board -> Int -> Gen -> (Int * Gen)
+    = match
+        Level:Easy   -> easy_move end
+        Level:Medium -> medium_move end
+        Level:Hard   -> hard_move end
+    end
+end
+
+# ======================================================================================
+# Colours and pieces of the picture
+# ======================================================================================
+
+# the blue board, and the colours of a red disk, a yellow disk and an empty hole
+let board_bg
+    : List Int
+    = [48, 2, 24, 64, 190]
+end
+
+let fg_of
+    : Int -> List Int
+    = match
+        1 -> [38, 2, 235, 50, 60] end
+        2 -> [38, 2, 252, 214, 48] end
+        _ -> [38, 2, 10, 14, 46] end
+    end
+end
+
+let bold_of
+    : Int -> List Int
+    = fn p -> List:Cons (1 * fg_of p) end
+end
+
+# one cell of the board: a disk (or a hole) on blue, or on a bright tile when highlighted
+let cell_str
+    : Int -> Bool -> String
+    = fn p, hl -> Ansi:sgr (append (cond hl [48, 2, 250, 250, 250] board_bg) (fg_of p)) " ● " end
+end
+
+let tag
+    : Int -> String -> String
+    = fn p, text -> Ansi:sgr (bold_of p) (append "● " text) end
+end
+
+let level_name
+    : Level -> String
+    = match
+        Level:Easy   -> "Easy" end
+        Level:Medium -> "Medium" end
+        Level:Hard   -> "Hard" end
+    end
+end
+
+# people are stupid
+let level_of
+    : Opp -> Level
+    = match
+        Opp:Human -> Level:Easy end
+        Opp:Bot l -> l end
+    end
+end
+
+let is_bot
+    : Opp -> Int -> Bool
+    = match
+        Opp:Bot _, 2 -> Bool:True end
+        _, _         -> Bool:False end
+    end
+end
+
+let status_for
+    : Opp -> Int -> String
+    = match
+        Opp:Human, 1 -> tag 1 "Player 1 (Red): pick a column" end
+        Opp:Human, p -> tag p "Player 2 (Yellow): pick a column" end
+        Opp:Bot _, 1 -> tag 1 "Your move" end
+        Opp:Bot l, p -> tag p < flatten ["Computer (", level_name l, ") is thinking..."] end
+    end
+end
+
+let win_text
+    : Opp -> Int -> String
+    = match
+        Opp:Human, 1 -> tag 1 "Player 1 (Red) wins!" end
+        Opp:Human, p -> tag p "Player 2 (Yellow) wins!" end
+        Opp:Bot _, 1 -> tag 1 "You win!" end
+        Opp:Bot _, p -> tag p "The computer wins!" end
+    end
+end
+
+let center
+    : Int -> String -> String
+    = fn cols, s -> append (spaces < max 0 (div (sub cols < Ansi:visible_length s) 2)) s end
+end
+
+let title_letters
+    : Int -> List String -> List String
+    = match
+        _, []                  -> [] end
+        i, List:Cons (l * ls)  ->
+            List:Cons (cond (eq l " ") " " (Ansi:sgr (bold_of (succ < mod i 2)) l) * title_letters (succ i) ls)
+        end
+    end
+end
+
+let banner
+    : Int -> List String
+    = fn cols -> [
+        center cols < Str:join " " < title_letters 0 ["C", "O", "N", "N", "E", "C", "T", " ", "4"],
+        center cols < Str:join " " < map (fn i -> Ansi:sgr (fg_of < succ < mod i 2) "●" end) (range 0 7),
+        ""
+    ] end
+end
+
+# The board picture
+
+# `ov` is a falling disk [column, row, player] (row 6 is the hand above the board), or
+# []; `hl` lists the cells to light up as column * 10 + row.
+let ov_at
+    : List Int -> Int -> Int -> Int
+    = match
+        List:Cons (oc * List:Cons (orow * List:Cons (op * _))), c, r ->
+            cond (and (eq oc c) (eq orow r)) op 0
+        end
+        _, _, _ -> 0 end
+    end
+end
+
+let cell_for
+    : Board -> List Int -> Int -> Int -> Int
+    = fn b, ov, c, r -> cond (gr (ov_at ov c r) 0) (ov_at ov c r) (cell b c r) end
+end
+
+# the disk held above column `sel` (nobody if `sel` is off the board), or the one dropping
+let hand_piece
+    : List Int -> Int -> Int -> Int -> Int
+    = match
+        [], p, sel, c -> cond (eq c sel) p 0 end
+        List:Cons (oc * List:Cons (orow * List:Cons (op * _))), _, _, c ->
+            cond (and (eq orow 6) (eq c oc)) op 0
+        end
+        _, _, _, _ -> 0 end
+    end
+end
+
+let hand_row
+    : Int -> Int -> Int -> List Int -> String
+    = fn pad, p, sel, ov ->
+        flatten [spaces pad, " ", flat_map (fn c -> hand_cell (hand_piece ov p sel c) end) (range 0 7)]
+    end
+end
+
+let hand_cell
+    : Int -> String
+    = fn q -> cond (eq q 0) "   " (Ansi:sgr (fg_of q) " ● ") end
+end
+
+let edge
+    : Int -> String
+    = fn pad -> append (spaces pad) (Ansi:sgr board_bg < spaces 23) end
+end
+
+let board_row
+    : Int -> Board -> List Int -> List Int -> Int -> String
+    = fn pad, b, ov, hl, r -> flatten [
+        spaces pad,
+        Ansi:sgr board_bg " ",
+        flat_map (fn c -> cell_str (cell_for b ov c r) (Search:contains (add (mul c 10) r) hl) end) (range 0 7),
+        Ansi:sgr board_bg " "
+    ] end
+end
+
+let number_row
+    : Int -> Int -> Int -> String
+    = fn pad, p, sel ->
+        flatten [spaces pad, " ", flat_map (number_cell p sel) (range 0 7)]
+    end
+end
+
+let number_cell
+    : Int -> Int -> Int -> String
+    = fn p, sel, c ->
+        cond (eq c sel)
+            (Ansi:sgr (bold_of p) < flatten [ " ", show < succ c, " "])
+            (Ansi:dim < flatten [" ", show < succ c, " "])
+    end
+end
+
+let board_lines
+    : Int -> Board -> Int -> Int -> List Int -> List Int -> List String
+    = fn pad, b, p, sel, ov, hl ->
+        List:Cons (hand_row pad p sel ov *
+            List:Cons (edge pad *
+                append (map (board_row pad b ov hl) [5, 4, 3, 2, 1, 0]) [edge pad, number_row pad p sel]
+            )
+        )
+    end
+end
+
+let pad_for
+    : Int -> Int
+    = fn cols -> max 0 (div (sub cols 23) 2) end
+end
+
+let game_lines
+    : Int -> Board -> Int -> Int -> List Int -> List Int -> String -> String -> List String
+    = fn cols, b, p, sel, ov, hl, status, footer -> flatten [
+        banner cols,
+        [center cols status, ""],
+        board_lines (pad_for cols) b p sel ov hl,
+        ["", center cols footer]
+    ] end
+end
+
+# Putting lines on the screen
+
+# each line goes on its own row, with whatever was there wiped first
+let place
+    : Int -> List String -> String
+    = match
+        _, []                  -> [] end
+        row, List:Cons (l * ls) ->
+            append (Ansi:move_to row 1) (append Ansi:clear_line (append l (place (succ row) ls)))
+        end
+    end
+end
+
+let too_small
+    : Int -> Int -> String
+    = fn cols, rows -> flatten [
+        Ansi:clear_screen,
+        (Ansi:move_to 1 1),
+        Ansi:sgr [1, 38, 2, 252, 214, 48] < flatten [
+            "Please make the window larger: this needs 64x18, it is ",
+            show cols,
+            "x",
+            show rows
+        ]
+    ] end
+end
+
+let show_lines
+    : (Int -> Int -> List String) -> IO Unit
+    = fn build -> bind (fn sz -> paint (fst sz) (rst sz) build end) Term:size end
+end
+
+let paint
+    : Int -> Int -> (Int -> Int -> List String) -> IO Unit
+    = fn cols, rows, build ->
+        cond (or (ls cols 64) (ls rows 18))
+            (print < too_small cols rows > then flush)
+            (paint_lines rows < build cols rows)
+    end
+end
+
+let paint_lines
+    : Int -> List String -> IO Unit
+    = fn rows, lines -> print < place (max 1 < succ < div (sub rows < len lines) 2) lines > then flush end
+end
+
+let clear
+    : IO Unit
+    = print Ansi:clear_screen
+end
+
+# Keys
+
+let digit_act
+    : Char -> Act
+    = fn c -> cond (and (gre c '1') (lse c '9')) (Act:PickNum (sub (ord c) 49)) Act:Ignore end
+end
+
+let menu_char
+    : Char -> Act
+    = match
+        'k' -> Act:GoPrev end
+        'w' -> Act:GoPrev end
+        'j' -> Act:GoNext end
+        's' -> Act:GoNext end
+        ' ' -> Act:Accept end
+        'q' -> Act:Leave end
+        c   -> digit_act c end
+    end
+end
+
+let menu_act
+    : Key -> Act
+    = match
+        Key:ArrowUp   -> Act:GoPrev end
+        Key:ArrowDown -> Act:GoNext end
+        Key:Enter     -> Act:Accept end
+        Key:Escape    -> Act:Leave end
+        Key:Ctrl _    -> Act:Leave end
+        Key:Eof       -> Act:Leave end
+        Key:Resize    -> Act:Redraw end
+        Key:Ch c      -> menu_char c end
+        _             -> Act:Ignore end
+    end
+end
+
+let game_char
+    : Char -> Act
+    = match
+        'a' -> Act:GoPrev end
+        'h' -> Act:GoPrev end
+        'd' -> Act:GoNext end
+        'l' -> Act:GoNext end
+        ' ' -> Act:Accept end
+        'q' -> Act:Leave end
+        c   -> digit_act c end
+    end
+end
+
+let game_act
+    : Key -> Act
+    = match
+        Key:ArrowLeft  -> Act:GoPrev end
+        Key:ArrowRight -> Act:GoNext end
+        Key:ArrowDown  -> Act:Accept end
+        Key:Enter      -> Act:Accept end
+        Key:Escape     -> Act:Leave end
+        Key:Ctrl _     -> Act:Leave end
+        Key:Eof        -> Act:Leave end
+        Key:Resize     -> Act:Redraw end
+        Key:Ch c       -> game_char c end
+        _              -> Act:Ignore end
+    end
+end
+
+let is_resize
+    : Key -> Bool
+    = match
+        Key:Resize -> Bool:True end
+        _          -> Bool:False end
+    end
+end
+
+# throws away keys pressed while something was animating (a closed input is not a key to
+# throw away: it never stops coming)
+let drain
+    : IO Unit
+    = bind (match
+        Maybe:Nil   -> return unit end
+        Maybe:Val k -> cond (eq Key:Eof k) (return unit) drain end
+    end) Term:poll_key
+end
+
+# Menus
+
+let menu_lines
+    : Int -> String -> List String -> Int -> List String
+    = fn cols, subtitle, items, sel -> flatten [
+        banner cols,
+        [center cols (Ansi:bold subtitle), ""],
+        item_lines cols (widest items) items sel 0,
+        ["", center cols < Ansi:dim "↑/↓ choose · Enter select · 1-9 jump · q back"]
+    ] end
+end
+
+let widest
+    : List String -> Int
+    = comp (foldl max 0) (map len)
+end
+
+let item_lines
+    : Int -> Int -> List String -> Int -> Int -> List String
+    = match
+        _, _, [], _, _ -> [] end
+        cols, w, List:Cons (item * rest), sel, i ->
+            List:Cons (center cols (item_text w sel i item) * item_lines cols w rest sel (succ i))
+        end
+    end
+end
+
+let item_text
+    : Int -> Int -> Int -> String -> String
+    = fn w, sel, i, item ->
+        cond (eq i sel)
+            (Ansi:sgr [1, 38, 2, 255, 255, 255, 48, 2, 24, 64, 190] < flatten ["  ▶ ", show < succ i, ". ", Str:pad_right w ' ' item, "  "])
+            (Ansi:dim (flatten ["    ", show < succ i, ". ", Str:pad_right w ' ' item, "  "]))
+    end
+end
+
+# Shows a menu and returns the index chosen, or -1 if the player backed out.
+let menu
+    : String -> List String -> Int -> IO Int
+    = fn subtitle, items, sel ->
+        show_lines (fn cols, rows -> menu_lines cols subtitle items sel end) > then <
+        Term:read_key > bind < comp (menu_step subtitle items sel) menu_act
+    end
+end
+
+let menu_step
+    : String -> List String -> Int -> Act -> IO Int
+    = fn subtitle, items, sel -> match
+        Act:GoPrev    -> menu subtitle items (mod (add (pred sel) (len items)) (len items)) end
+        Act:GoNext    -> menu subtitle items (mod (succ sel) (len items)) end
+        Act:Accept    -> return sel end
+        Act:PickNum n -> cond (ls n (len items)) (return n) (menu subtitle items sel) end
+        Act:Leave     -> return -1 end
+        Act:Redraw    -> clear > then < menu subtitle items sel end
+        Act:Ignore    -> menu subtitle items sel end
+    end end
+end
+
+# A game
+
+let redraw
+    : Board -> Int -> Int -> List Int -> List Int -> String -> String -> IO Unit
+    = fn b, p, sel, ov, hl, status, footer ->
+        show_lines < fn cols, rows -> game_lines cols b p sel ov hl status footer end
+    end
+end
+
+let help_game
+    : String
+    = Ansi:dim "←/→ move · Enter/↓ drop · 1-7 quick drop · q back to the menu"
+end
+
+let press_key
+    : String
+    = Ansi:dim "Press any key to return to the menu"
+end
+
+# show board then wait for a move
+let game_turn
+    : Opp -> Board -> Int -> Int -> Gen -> IO Gen
+    = fn opp, b, p, sel, g ->
+        redraw b p sel [] [] (status_for opp p) help_game > then <
+        cond (is_bot opp p) (bot_turn opp b p sel g) (human_turn opp b p sel g)
+    end
+end
+
+let human_turn
+    : Opp -> Board -> Int -> Int -> Gen -> IO Gen
+    = fn opp, b, p, sel, g ->
+        Term:read_key > bind < comp (human_step opp b p sel g) game_act
+    end
+end
+
+let human_step
+    : Opp -> Board -> Int -> Int -> Gen -> Act -> IO Gen
+    = fn opp, b, p, sel, g -> match
+        Act:GoPrev    -> game_turn opp b p (max 0 < pred sel) g end
+        Act:GoNext    -> game_turn opp b p (min 6 < succ sel) g end
+        Act:Accept    -> try_drop opp b p sel sel g end
+        Act:PickNum c -> cond (ls c 7) (try_drop opp b p c c g) (human_turn opp b p sel g) end
+        Act:Leave     -> return g end
+        Act:Redraw    -> clear > then < game_turn opp b p sel g end
+        Act:Ignore    -> human_turn opp b p sel g end
+    end
+    end
+end
+
+let try_drop
+    : Opp -> Board -> Int -> Int -> Int -> Gen -> IO Gen
+    = fn opp, b, p, sel, col, g ->
+        cond (can_play b col)
+            (drop_flow opp b p col g)
+            (print Ansi:bell > then < game_turn opp b p sel g)
+    end
+end
+
+let drop_flow
+    : Opp -> Board -> Int -> Int -> Gen -> IO Gen
+    = fn opp, b, p, col, g ->
+        fall b p col 5 (len < column b col) (status_for opp p) > then
+        (after_move opp (drop_piece col p b) p col g)
+    end
+end
+
+# the disk falls from the top row down to the one it lands in
+let fall
+    : Board -> Int -> Int -> Int -> Int -> String -> IO Unit
+    = fn b, p, col, row, land, status ->
+        redraw b p col [col, row, p] [] status help_game > then <
+        Time:sleep_ms 50 > then <
+        cond (eq row land) (return unit) (fall b p col (pred row) land status)
+    end
+end
+
+# the disk held over the board slides sideways to a column
+let slide
+    : Board -> Int -> Int -> Int -> String -> IO Unit
+    = fn b, p, f, t, status ->
+        cond (eq f t)
+            (return unit)
+            (redraw b p (step_toward f t) [] [] status help_game > then
+                (Time:sleep_ms 70) > then
+                (slide b p (step_toward f t) t status))
+    end
+end
+
+let step_toward
+    : Int -> Int -> Int
+    = fn f, t -> cond (ls f t) (succ f) (pred f) end
+end
+
+let bot_turn
+    : Opp -> Board -> Int -> Int -> Gen -> IO Gen
+    = fn opp, b, p, sel, g ->
+        Time:sleep_ms (think_ms (level_of opp)) > then <
+        bot_go opp b p sel < ai_move (level_of opp) b p g
+    end
+with think_ms
+    : Level -> Int
+    = match
+        Level:Easy   -> 700 end
+        Level:Medium -> 600 end
+        Level:Hard   -> 250 end
+    end
+end
+
+let bot_go
+    : Opp -> Board -> Int -> Int -> (Int * Gen) -> IO Gen
+    = fn opp, b, p, sel -> match
+        (col * g2) ->
+            slide b p sel col < status_for opp p > then <
+            fall b p col 5 (len < column b col) (status_for opp p) > then
+            drain > then <
+            after_move opp (drop_piece col p b) p col g2
+        end
+    end end
+end
+
+let after_move
+    : Opp -> Board -> Int -> Int -> Gen -> IO Gen
+    = fn opp, b, p, col, g ->
+        cond (neq (winner_of (all_windows b)) 0) (celebrate opp b p (winning_cells b p) g)
+      < cond (is_full b)
+            (finish b p [] < Ansi:bold "It's a draw!" > then < return g)
+            (game_turn opp b (other p) col g)
+    end
+end
+
+let celebrate
+    : Opp -> Board -> Int -> List Int -> Gen -> IO Gen
+    = fn opp, b, p, cells, g ->
+        flash b p cells 7 < win_text opp p > then <
+        finish b p cells < win_text opp p > then <
+        return g
+    end
+end
+
+# winning cells flash
+let flash
+    : Board -> Int -> List Int -> Int -> String -> IO Unit
+    = fn b, p, cells, n, status ->
+        cond (eq n 0) (return unit) (
+            redraw b p -1 [] (cond (eq 1 < mod n 2) cells []) status "" > then <
+            Time:sleep_ms 230 > then <
+            flash b p cells (pred n) status
+        )
+    end
+end
+
+let finish
+    : Board -> Int -> List Int -> String -> IO Unit
+    = fn b, p, cells, status ->
+        drain > then < finish_wait b p cells status
+    end
+end
+
+let finish_wait
+    : Board -> Int -> List Int -> String -> IO Unit
+    = fn b, p, cells, status ->
+        redraw b p -1 [] cells status press_key > then <
+        Term:read_key > bind fn k ->
+            cond (is_resize k)
+                (clear > then < finish_wait b p cells status)
+                (return unit)
+        end
+    end
+end
+
+let winning_cells
+    : Board -> Int -> List Int
+    = fn b, p -> flat_map (fn st -> flat_map (line_cells b p st) directions end) all_cells end
+end
+
+let all_cells
+    : List (Int * Int)
+    = flat_map (fn c -> map (fn r -> (c * r) end) (range 0 6) end) (range 0 7)
+end
+
+# r, u, u-r, d-r
+let directions
+    : List (Int * Int)
+    = [(1 * 0), (0 * 1), (1 * 1), (1 * -1)]
+end
+
+let line_cells
+    : Board -> Int -> (Int * Int) -> (Int * Int) -> List Int
+    = fn b, p, st, d ->
+        cond (Search:all (fn k -> eq (cell b (add (fst st) (mul k < fst d)) (add (rst st) (mul k < rst d))) p end) (range 0 4))
+            (map (fn k -> add (mul (add (fst st) (mul k < fst d)) 10) (add (rst st) (mul k < rst d)) end) (range 0 4))
+            []
+    end
+end
+
+# The main menu
+
+let play
+    : Opp -> Gen -> IO Unit
+    = fn opp, g ->
+        clear > then <
+        game_turn opp empty_board 1 3 g > bind fn g2 ->
+            clear > then < main_menu g2
+        end
+    end
+end
+
+# each menu wipes the screen when it opens
+# menus of different heights sit at different rows
+let main_menu
+    : Gen -> IO Unit
+    = fn g ->
+        clear > then <
+        menu "Choose a game mode" ["Single player", "Two players", "Quit"] 0 > bind <
+        flip main_choice g
+    end
+end
+
+let main_choice
+    : Int -> Gen -> IO Unit
+    = fn i, g ->
+        cond (eq i 0) (level_menu g)
+      < cond (eq i 1) (play Opp:Human g) (return unit)
+    end
+end
+
+let level_menu
+    : Gen -> IO Unit
+    = fn g ->
+        clear > then <
+        menu "Choose the computer's strength"
+            ["Easy: mostly random", "Medium: plans 2 moves ahead", "Hard: plans 5 moves ahead", "Back"] 1
+        > bind < flip level_choice g
+    end
+end
+
+let level_choice
+    : Int -> Gen -> IO Unit
+    = fn i ->
+        cond (eq i 0) (play < Opp:Bot Level:Easy)
+      < cond (eq i 1) (play < Opp:Bot Level:Medium)
+      < cond (eq i 2) (play < Opp:Bot Level:Hard) main_menu
+    end
+end
+
+let setup
+    : IO Unit
+    = print < flatten [Ansi:alt_screen_on, Ansi:hide_cursor, Ansi:clear_screen] > then flush
+end
+
+let teardown
+    : IO Unit
+    = print < flatten [Ansi:reset, Ansi:show_cursor, Ansi:alt_screen_off] > then flush
+end
+
+let main
+    : IO Int
+    = bind (fn g ->
+        setup > then <
+        Term:with_raw_mode < main_menu g > then
+        teardown > then <
+        return 0
+    end) Rng:from_os
+end
