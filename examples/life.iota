@@ -1,37 +1,54 @@
 module Main is
 
-# Conway's GOL with sparse grid
-#   (empty)   advance one generation           N        advance N generations
-#   t X Y     toggle the cell at X Y           g        load a glider
-#   p         load the R-pentomino             c        clear the world
-#   q         quit
+# Conway's Game of Life with an unbounded sparse grid
+#
+# Arrow keys    move the cursor within the viewport
+# Space         toggle the selected cell when the command line is empty
+# Enter         step once, or execute the command line
+# Backspace     erase the last command character
+# Escape        clear the command line
+# Ctrl-key/EOF  quit
+#
+# Commands:
+#   N          advance N generations
+#   t X Y      toggle a cell at absolute world coordinates
+#   v DX DY    move the viewport by a relative offset
+#   g          load a glider
+#   p          load the R-pentomino
+#   c          clear the world
+#   q          quit
+
+import file std/ansi.iota
+import file std/term.iota
 
 type Cell = Int * Int end
 type World = List Cell end
 
-let width
-    : Int
-    = 40
-end
+let width : Int = 40 end
 
-let height
-    : Int
-    = 16
-end
+let height : Int = 16 end
+
+# ---- sparse world ----
 
 let member
     : Cell -> World -> Bool
     = match
-        _, []                 -> Bool:False end
-        c, List:Cons (x * xs) -> or (eq c x) (member c xs) end
+        _, [] -> Bool:False end
+        c, List:Cons (x * xs) ->
+            or (eq c x) (member c xs)
+        end
     end
 end
 
 let nub
     : World -> World
     = match
-        []                 -> [] end
-        List:Cons (x * xs) -> cond (member x xs) (nub xs) (List:Cons (x * nub xs)) end
+        [] -> [] end
+        List:Cons (x * xs) ->
+            cond (member x xs)
+                (nub xs)
+                (List:Cons (x * nub xs))
+        end
     end
 end
 
@@ -48,15 +65,17 @@ end
 
 let count
     : World -> Cell -> Int
-    = fn w ->
-        fn c -> len (filter (flip member w) (neighbours c)) end
+    = fn w, c ->
+        len (filter (flip member w) (neighbours c))
     end
 end
 
 let survives
     : Bool -> Int -> Bool
-    = fn alive ->
-        fn n -> cond alive (or (eq n 2) (eq n 3)) (eq n 3) end
+    = fn alive, n ->
+        cond alive
+            (or (eq n 2) (eq n 3))
+            (eq n 3)
     end
 end
 
@@ -64,22 +83,26 @@ end
 let step
     : World -> World
     = fn w ->
-        filter (fn c -> survives (member c w) (count w c) end)
-               (nub (append w (bind neighbours w)))
+        filter
+            (fn c -> survives (member c w) (count w c) end)
+            (nub < append w < bind neighbours w)
     end
 end
 
 let advance
     : Int -> World -> World
-    = fn n ->
-        fn w -> cond (lse n 0) w (advance (sub n 1) (step w)) end
+    = fn n, w ->
+        cond (lse n 0) w
+            (advance (pred n) (step w))
     end
 end
 
 let toggle
     : Cell -> World -> World
-    = fn c ->
-        fn w -> cond (member c w) (filter (neq c) w) (List:Cons (c * w)) end
+    = fn c, w ->
+        cond (member c w)
+            (filter (neq c) w)
+            (List:Cons (c * w))
     end
 end
 
@@ -95,115 +118,339 @@ let pentomino
     = [(21 * 7), (22 * 7), (20 * 8), (21 * 8), (21 * 9)]
 end
 
-# drawing
+# ---- drawing ----
 
-let row
-    : World -> Int -> String
-    = fn w ->
-        fn y -> map (fn x -> cond (member (x * y) w) '#' '.' end) (range 0 width) end
+# vx/vy: world coordinates of the viewport's upper-left corner
+# cx/cy: cursor coordinates within the viewport
+# x/y:   coordinates of a cell within the viewport
+
+let cell_text
+    : World -> Int -> Int -> Int -> Int -> Int -> Int -> String
+    = fn w, vx, vy, cx, cy, x, y ->
+        Ansi:sgr
+           (cond (and (eq x cx) (eq y cy)) [1, 30, 46]
+           (cond (member (add vx x * add vy y) w) [1, 32] [90])
+        )  (cond (member (add vx x * add vy y) w) "[]" "· ")
     end
 end
 
-let seq
-    : List (IO Unit) -> IO Unit
+let row_text
+    : World -> Int -> Int -> Int -> Int -> Int -> String
+    = fn w, vx, vy, cx, cy, y ->
+        flatten [
+            "  ",
+            flat_map
+                (fn x -> cell_text w vx vy cx cy x y end)
+                (range 0 width)
+        ]
+    end
+end
+
+let frame
+    : Int -> World -> Int -> Int -> Int -> Int -> String -> String -> List String
+    = fn g, w, vx, vy, cx, cy, input, message ->
+        flatten [
+            [
+                Ansi:bold "CONWAY'S GAME OF LIFE",
+                flatten [
+                    "Generation: ", show g,
+                    "    Live: ", show < len w,
+                    "    View: (", show vx, ", ", show vy, ")",
+                    "    Cursor: (",
+                    show < add vx cx, ", ",
+                    show < add vy cy, ")"
+                ],
+                ""
+            ],
+            map (row_text w vx vy cx cy) (range 0 height),
+            [
+                "",
+                Ansi:dim "Arrows: move   Space: toggle   Enter: step / execute command",
+                Ansi:dim "Commands: N | t X Y | v DX DY | g glider | p pentomino | c clear | q",
+                Ansi:dim "Backspace: erase   Esc: clear command   Ctrl-key: quit",
+                message,
+                flatten ["> ", input, "▏"]
+            ]
+        ]
+    end
+end
+
+# Each frame overwrites fixed terminal rows instead of scrolling.
+# Clip lines before printing so long status text cannot wrap.
+let place_lines
+    : Int -> Int -> List String -> String
     = match
-        []                   -> println "" end
-        List:Cons (a * [])   -> a end
-        List:Cons (a * rest) -> then (seq rest) a end
+        _, _, [] -> [] end
+        cols, r, List:Cons (line * rest) -> flatten [
+            Ansi:move_to r 1,
+            Ansi:clear_line,
+            line,
+            place_lines cols (succ r) rest
+        ]
+        end
     end
 end
 
 let draw
-    : Int -> World -> IO Unit
-    = fn g ->
-        fn w -> seq (append
-            [println (concat "Generation " (show g))]
-            (append (map (fn y -> println (row w y) end) (range 0 height))
-                    [println (concat "Live cells: " (show (len w)))])) end
+    : Int -> World -> Int -> Int -> Int -> Int -> String -> String -> IO Unit
+    = fn g, w, vx, vy, cx, cy, input, message ->
+        Term:size > bind fn sz ->
+            paint (fst sz) (rst sz)
+                g w vx vy cx cy input message
+        end
     end
 end
 
-# input
+let paint
+    : Int -> Int -> Int -> World -> Int -> Int -> Int -> Int -> String -> String -> IO Unit
+    = fn cols, rows, g, w, vx, vy, cx, cy, input, message ->
+        cond (or (ls cols 84) (ls rows (add height 9))) (
+            print (flatten [
+                Ansi:move_to 1 1,
+                Ansi:clear_line,
+                take (max 0 (pred cols)) (flatten [
+                    "Please enlarge the terminal to at least 84x",
+                    show (add height 9),
+                    ". Current size: ",
+                    show cols, "x", show rows
+                ])
+            ])
+        ) (
+            print < place_lines cols 1 <
+                frame g w vx vy cx cy
+                    (take (max 0 < sub cols 4) input)
+                    message
+        ) > then flush
+    end
+end
+
+# ---- command parsing ----
 
 let drop_word
     : String -> String
     = match
-        []                 -> [] end
-        List:Cons (c * cs) -> cond (eq ' ' c) (List:Cons (c * cs)) (drop_word cs) end
+        [] -> [] end
+        List:Cons (c * cs) ->
+            cond (eq ' ' c)
+                (List:Cons (c * cs))
+                (drop_word cs)
+        end
     end
 end
 
 let words
     : String -> List String
     = match
-        []                   -> [] end
+        [] -> [] end
         List:Cons (' ' * cs) -> words cs end
-        s -> List:Cons (take_while (neq ' ') s * words (drop_word s)) end
-    end
-end
-
-# ---- the interactive loop ----
-
-let prompt
-    : IO Unit
-    = print "[enter] step   N run   t X Y toggle   g glider   p pentomino   c clear   q quit > "
-end
-
-let help
-    : Int -> World -> IO Unit
-    = fn g ->
-        fn w -> println "?  try: [enter]  N  t X Y  g  p  c  q" > then (loop g w) end
-    end
-end
-
-let loop
-    : Int -> World -> IO Unit
-    = fn g ->
-        fn w -> draw g w > then prompt > then
-                (getln > bind (fn line -> command g w (words line) end))
+        s ->
+            List:Cons (
+                take_while (neq ' ') s *
+                words (drop_word s)
+            )
         end
     end
 end
 
+let erase_last
+    : String -> String
+    = fn s ->
+        take (max 0 < pred < len s) s
+    end
+end
+
+# ---- event loop ----
+
+# State:
+#   generation, world, viewport x/y, cursor x/y, command, message
+
+let loop
+    : Int -> World -> Int -> Int -> Int -> Int -> String -> String -> IO Unit
+    = fn g, w, vx, vy, cx, cy, input, message ->
+        draw g w vx vy cx cy input message > then <
+        Term:read_key > bind (fn key ->
+            handle_key g w vx vy cx cy input message key
+        end)
+    end
+end
+
+let handle_key
+    : Int -> World -> Int -> Int -> Int -> Int -> String -> String -> Key -> IO Unit
+    = fn g, w, vx, vy, cx, cy, input, message -> match
+        Key:ArrowLeft ->
+            loop g w vx vy (max 0 < pred cx) cy input message
+        end
+
+        Key:ArrowRight ->
+            loop g w vx vy (min (pred width) (succ cx)) cy input message
+        end
+
+        Key:ArrowUp ->
+            loop g w vx vy cx (max 0 < pred cy) input message
+        end
+
+        Key:ArrowDown ->
+            loop g w vx vy cx (min (pred height) (succ cy)) input message
+        end
+
+        Key:Backspace ->
+            loop g w vx vy cx cy (erase_last input) ""
+        end
+
+        Key:Enter ->
+            command g w vx vy cx cy (words input)
+        end
+
+        Key:Escape ->
+            loop g w vx vy cx cy "" ""
+        end
+
+        Key:Ctrl _ ->
+            return unit
+        end
+
+        Key:Eof ->
+            return unit
+        end
+
+        Key:Resize ->
+            print Ansi:clear_screen > then <
+            loop g w vx vy cx cy input message
+        end
+
+        Key:Ch c ->
+            handle_char g w vx vy cx cy input message c
+        end
+
+        _ ->
+            loop g w vx vy cx cy input message
+        end
+    end end
+end
+
+let handle_char
+    : Int -> World -> Int -> Int -> Int -> Int -> String -> String -> Char -> IO Unit
+    = fn g, w, vx, vy, cx, cy, input, message, c ->
+        cond (and (eq c ' ') (eq input "")) (
+            loop g
+                (toggle (add vx cx * add vy cy) w)
+                vx vy cx cy "" ""
+        ) (
+            cond (and (gre (ord c) 32) (neq (ord c) 127))
+                (loop g w vx vy cx cy (append input [c]) "")
+                (loop g w vx vy cx cy input message)
+        )
+    end
+end
+
+let bad_command
+    : Int -> World -> Int -> Int -> Int -> Int -> IO Unit
+    = fn g, w, vx, vy, cx, cy ->
+        loop g w vx vy cx cy "" "Unknown command. Use N, t X Y, v DX DY, g, p, c, or q."
+    end
+end
+
 let command
-    : Int -> World -> List String -> IO Unit
+    : Int -> World -> Int -> Int -> Int -> Int -> List String -> IO Unit
     = match
-        g, w, []                              -> loop (add g 1) (step w) end
-        g, w, List:Cons (a * [])              -> single g w a end
-        g, w, List:Cons (t * List:Cons (x * List:Cons (y * []))) ->
-            cond (eq t "t") (place g w (parse x) (parse y)) (help g w) end
-        g, w, _                               -> help g w end
+        g, w, vx, vy, cx, cy, [] ->
+            loop (succ g) (step w) vx vy cx cy "" ""
+        end
+
+        g, w, vx, vy, cx, cy, List:Cons (a * []) ->
+            single g w vx vy cx cy a
+        end
+
+        g, w, vx, vy, cx, cy,
+            List:Cons (cmd * List:Cons (x * List:Cons (y * []))) ->
+            cond (eq cmd "t") (place_cell g w vx vy cx cy (parse x) (parse y))
+          < cond (eq cmd "v")
+                (move_view g w vx vy cx cy (parse x) (parse y))
+                (bad_command g w vx vy cx cy)
+        end
+
+        g, w, vx, vy, cx, cy, _ ->
+            bad_command g w vx vy cx cy
+        end
     end
 end
 
 let single
-    : Int -> World -> String -> IO Unit
-    = fn g -> fn w -> fn a ->
-            cond (eq a "q") (println "Quitting")
-            (cond (eq a "c") (loop 0 [])
-            (cond (eq a "g") (loop 0 glider)
-            (cond (eq a "p") (loop 0 pentomino)
-            (run g w (parse a))))) end end
+    : Int -> World -> Int -> Int -> Int -> Int -> String -> IO Unit
+    = fn g, w, vx, vy, cx, cy, a ->
+        cond (eq a "q") (return unit)
+      < cond (eq a "c") (loop 0 [] vx vy cx cy "" "World cleared.")
+      < cond (eq a "g") (loop 0 glider vx vy cx cy "" "Glider loaded.")
+      < cond (eq a "p") (loop 0 pentomino vx vy cx cy "" "R-pentomino loaded.")
+            (run g w vx vy cx cy < parse a)
     end
 end
 
 let run
-    : Int -> World -> Maybe Int -> IO Unit
+    : Int -> World -> Int -> Int -> Int -> Int -> Maybe Int -> IO Unit
     = match
-        g, w, Maybe:Val n -> loop (add g n) (advance n w) end
-        g, w, Maybe:Nil   -> help g w end
+        g, w, vx, vy, cx, cy, Maybe:Val n ->
+            cond (ls n 0)
+                (loop g w vx vy cx cy "" "Generation count must be nonnegative.")
+                (loop (add g n) (advance n w) vx vy cx cy "" "")
+        end
+
+        g, w, vx, vy, cx, cy, Maybe:Nil ->
+            bad_command g w vx vy cx cy
+        end
     end
 end
 
-let place
-    : Int -> World -> Maybe Int -> Maybe Int -> IO Unit
+# t X Y uses absolute world coordinates.
+let place_cell
+    : Int -> World -> Int -> Int -> Int -> Int -> Maybe Int -> Maybe Int -> IO Unit
     = match
-        g, w, Maybe:Val x, Maybe:Val y -> loop g (toggle (x * y) w) end
-        g, w, _, _                     -> help g w end
+        g, w, vx, vy, cx, cy, Maybe:Val x, Maybe:Val y ->
+            loop g (toggle (x * y) w) vx vy cx cy "" ""
+        end
+
+        g, w, vx, vy, cx, cy, _, _ ->
+            loop g w vx vy cx cy "" "Usage: t X Y"
+        end
     end
+end
+
+# v DX DY moves the viewport without changing the world.
+# Positive x moves right; positive y moves down.
+let move_view
+    : Int -> World -> Int -> Int -> Int -> Int -> Maybe Int -> Maybe Int -> IO Unit
+    = match
+        g, w, vx, vy, cx, cy, Maybe:Val dx, Maybe:Val dy ->
+            loop g w (add vx dx) (add vy dy) cx cy "" ""
+        end
+
+        g, w, vx, vy, cx, cy, _, _ ->
+            loop g w vx vy cx cy "" "Usage: v DX DY"
+        end
+    end
+end
+
+# ---- terminal lifecycle ----
+
+let setup
+    : IO Unit
+    = print (flatten [
+        Ansi:alt_screen_on,
+        Ansi:hide_cursor,
+        Ansi:clear_screen
+    ]) > then flush
+end
+
+let teardown
+    : IO Unit
+    = print (flatten [
+        Ansi:reset,
+        Ansi:show_cursor,
+        Ansi:alt_screen_off
+    ]) > then flush
 end
 
 let main
     : IO Unit
-    = loop 0 glider
+    = setup > then < Term:with_raw_mode (loop 0 glider 0 0 0 0 "" "") > then teardown
 end
