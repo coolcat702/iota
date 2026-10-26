@@ -1,0 +1,171 @@
+module Path is
+
+# File path manipulation. Pure string work (nothing here touches the disk), for POSIX paths
+# with "/" separators.
+#
+#     import file std/path.iota
+#
+#     Path:join "src" "main.iota"        # "src/main.iota"
+#     Path:basename "/a/b/c.txt"         # "c.txt"
+#     Path:extension "/a/b/c.tar.gz"     # Val "gz"
+#     Path:normalize "a/./b/../c"        # "a/c"
+
+import file std/str.iota
+
+let separator
+    : Char
+    = '/'
+end
+
+let is_absolute
+    : String -> Bool
+    = Str:starts_with "/"
+end
+
+# `join dir name`. If `name` is absolute it replaces `dir`; an empty side is ignored.
+let join
+    : String -> String -> String
+    = fn a, b ->
+        cond (is_absolute b)
+            b
+            (cond (Str:is_empty a)
+                b
+                (cond (Str:is_empty b)
+                    a
+                    (cond (Str:ends_with "/" a) (append a b) (append a (append "/" b)))))
+      end
+end
+
+# The non-empty parts between slashes: "/a//b/" gives ["a", "b"].
+let components
+    : String -> List String
+    = fn p -> filter (fn c -> not (Str:is_empty c) end) (Str:split '/' p) end
+end
+
+# Resolves "." and ".." textually (without looking at the disk, so symlinks are not
+# considered). ".." above the root of an absolute path is dropped; above the start of a
+# relative one it is kept.
+let normalize
+    : String -> String
+    = fn p ->
+        render (is_absolute p) (reverse (foldl (step (is_absolute p)) [] (components p)))
+      end
+end
+
+let step
+    : Bool -> List String -> String -> List String
+    = fn absolute, stack, part ->
+        cond (eq part ".")
+            stack
+            (cond (eq part "..")
+                (up absolute stack)
+                (List:Cons (part * stack)))
+      end
+end
+
+# ".." removes the previous component, unless there is none: at the root it vanishes, in a
+# relative path it stays
+let up
+    : Bool -> List String -> List String
+    = match
+        absolute, []                 -> cond absolute [] [".."] end
+        _, List:Cons (top * rest)    -> cond (eq top "..") (List:Cons (".." * List:Cons (top * rest))) rest end
+    end
+end
+
+let render
+    : Bool -> List String -> String
+    = fn absolute, parts ->
+        cond (Str:is_empty (Str:join "/" parts))
+            (cond absolute "/" ".")
+            (cond absolute (append "/" (Str:join "/" parts)) (Str:join "/" parts))
+      end
+end
+
+# the last component: "/a/b/c.txt" gives "c.txt"; "/" and "" give ""
+let basename
+    : String -> String
+    = fn p -> map_last_or_empty (components p) end
+end
+
+let map_last_or_empty
+    : List String -> String
+    = match
+        []                  -> [] end
+        List:Cons (x * [])  -> x end
+        List:Cons (_ * xs)  -> map_last_or_empty xs end
+    end
+end
+
+# everything but the last component: "/a/b/c" gives "/a/b"; "c" gives "."; "/c" gives "/"
+let dirname
+    : String -> String
+    = fn p ->
+        render (is_absolute p) (drop_last (components p))
+      end
+end
+
+let drop_last
+    : List String -> List String
+    = match
+        []                  -> [] end
+        List:Cons (_ * [])  -> [] end
+        List:Cons (x * xs)  -> List:Cons (x * drop_last xs) end
+    end
+end
+
+# The text after the last "." of the final component, if there is one that is not the
+# leading dot of a hidden file: "a/b.txt" is `Val "txt"`, ".bashrc" and "Makefile" are `Nil`.
+let extension
+    : String -> Maybe String
+    = fn p -> ext_of (basename p) end
+end
+
+let ext_of
+    : String -> Maybe String
+    = fn name ->
+        cond (lse (len name) 1)
+            Maybe:Nil
+            (last_dot (drop 1 name) (Maybe:Nil))
+      end
+end
+
+let last_dot
+    : String -> Maybe String -> Maybe String
+    = match
+        [], found                    -> found end
+        List:Cons (c * cs), found    ->
+            cond (eq c '.')
+                (last_dot cs (Maybe:Val cs))
+                (last_dot cs found)
+        end
+    end
+end
+
+# the final component without its extension: "a/b.tar.gz" gives "b.tar"
+let stem
+    : String -> String
+    = fn p -> strip_ext (basename p) (extension p) end
+end
+
+let strip_ext
+    : String -> Maybe String -> String
+    = match
+        name, Maybe:Nil   -> name end
+        name, Maybe:Val e -> take (sub (len name) (add (len e) 1)) name end
+    end
+end
+
+# `with_extension "txt" "a/b.md"` is "a/b.txt"
+let with_extension
+    : String -> String -> String
+    = fn ext, p ->
+        join (dirname_keep p) (append (stem p) (cond (Str:is_empty ext) [] (append "." ext)))
+      end
+end
+
+# like dirname, but "" for a bare file name, so `join` leaves the name alone
+let dirname_keep
+    : String -> String
+    = fn p -> cond (eq (dirname p) ".") (cond (is_absolute p) "/" []) (dirname p) end
+end

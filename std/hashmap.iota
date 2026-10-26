@@ -1,0 +1,427 @@
+module HashMap is
+
+# An immutable hash map: every update returns a new map and leaves the old one intact
+# (the two share almost all of their structure). Keys need `Hashable` and `Eqable`.
+#
+#     import file std/hashmap.iota
+#
+#     let m : HashMap String Int
+#         = HashMap:from_list [("a" * 1), ("b" * 2)]
+#     end
+#     HashMap:get "a" m              # Val 1
+#     HashMap:insert "c" 3 m         # a new map; `m` is unchanged
+#
+# Lookups, inserts and removals take O(log n) time. Iteration order (`to_list`, `keys`,
+# `fold`, ...) is deterministic but unspecified.
+#
+# It is a hash trie: each level of the tree consumes two bits of the key's hash, a lone entry
+# is stored as a leaf as high up as possible, and entries whose hashes are identical share a
+# collision list.
+
+type HNode k v = Empty + Leaf (Int * (k * v)) + Collision (Int * List (k * v)) + Branch ((HNode k v * HNode k v) * (HNode k v * HNode k v))
+end
+
+# the number of entries, and the trie
+type HashMap k v = HM (Int * HNode k v)
+end
+
+# ---- construction ----
+
+let empty k v
+    : HashMap k v
+    = HashMap:HM (0 * HNode:Empty)
+end
+
+let singleton (k : Hashable, Eqable) v
+    : k -> v -> HashMap k v
+    = fn key, value -> insert key value empty end
+end
+
+let from_list (k : Hashable, Eqable) v
+    : List (k * v) -> HashMap k v
+    = foldl (fn m, kv -> insert (fst kv) (rst kv) m end) empty
+end
+
+# like `from_list`, but `f new old` combines the values of repeated keys
+let from_list_with (k : Hashable, Eqable) v
+    : (v -> v -> v) -> List (k * v) -> HashMap k v
+    = fn f -> foldl (fn m, kv -> insert_with f (fst kv) (rst kv) m end) empty end
+end
+
+# ---- queries ----
+
+let size k v
+    : HashMap k v -> Int
+    = match
+        HashMap:HM (n * _) -> n end
+    end
+end
+
+let is_empty k v
+    : HashMap k v -> Bool
+    = fn m -> eq (size m) 0 end
+end
+
+let get (k : Hashable, Eqable) v
+    : k -> HashMap k v -> Maybe v
+    = fn key -> match
+        HashMap:HM (_ * root) -> get_node 0 (hash key) key root end
+      end
+    end
+end
+
+let get_or (k : Hashable, Eqable) v
+    : v -> k -> HashMap k v -> v
+    = fn default, key, m -> map_nil_same default (get key m) end
+end
+
+let member (k : Hashable, Eqable) v
+    : k -> HashMap k v -> Bool
+    = fn key, m -> neq (maybe_map (const unit) (get key m)) Maybe:Nil end
+end
+
+# ---- updates ----
+
+let insert (k : Hashable, Eqable) v
+    : k -> v -> HashMap k v -> HashMap k v
+    = fn key, value -> alter key (const (Maybe:Val value)) end
+end
+
+# `insert_with f key value m`: if the key is present its value becomes `f value old`
+let insert_with (k : Hashable, Eqable) v
+    : (v -> v -> v) -> k -> v -> HashMap k v -> HashMap k v
+    = fn f, key, value ->
+        alter key (fn old -> Maybe:Val (maybe_fold value (f value) old) end)
+      end
+end
+
+let remove (k : Hashable, Eqable) v
+    : k -> HashMap k v -> HashMap k v
+    = fn key -> alter key (const Maybe:Nil) end
+end
+
+# Applies `f` to the value under a key, if there is one.
+let adjust (k : Hashable, Eqable) v
+    : (v -> v) -> k -> HashMap k v -> HashMap k v
+    = fn f, key -> alter key (maybe_map f) end
+end
+
+# The general update: `f` sees the current value (if any) and returns the new one; `Nil`
+# means "no entry". Insert, remove and adjust are all special cases.
+let alter (k : Hashable, Eqable) v
+    : k -> (Maybe v -> Maybe v) -> HashMap k v -> HashMap k v
+    = fn key, f -> match
+        HashMap:HM (n * root) -> rebuild_map n (alter_node 0 (hash key) key f root) end
+      end
+    end
+end
+
+let rebuild_map k v
+    : Int -> (HNode k v * Int) -> HashMap k v
+    = fn n -> match
+        (root * delta) -> HashMap:HM (add n delta * root) end
+      end
+    end
+end
+
+# ---- whole-map operations ----
+
+# `fold f acc m` calls `f acc key value` for every entry.
+let fold k v b
+    : (b -> k -> v -> b) -> b -> HashMap k v -> b
+    = fn f, acc -> match
+        HashMap:HM (_ * root) -> fold_node f acc root end
+      end
+    end
+end
+
+let to_list k v
+    : HashMap k v -> List (k * v)
+    = fn m -> reverse (fold (fn acc, key, value -> List:Cons ((key * value) * acc) end) [] m) end
+end
+
+let keys k v
+    : HashMap k v -> List k
+    = fn m -> map fst (to_list m) end
+end
+
+let values k v
+    : HashMap k v -> List v
+    = fn m -> map rst (to_list m) end
+end
+
+let map_values k v w
+    : (v -> w) -> HashMap k v -> HashMap k w
+    = fn f -> match
+        HashMap:HM (n * root) -> HashMap:HM (n * map_node f root) end
+      end
+    end
+end
+
+# Keeps the entries for which `p key value` holds.
+let filter (k : Hashable, Eqable) v
+    : (k -> v -> Bool) -> HashMap k v -> HashMap k v
+    = fn p, m -> fold (fn acc, key, value -> cond (p key value) (insert key value acc) acc end) empty m end
+end
+
+# Every entry of both maps; on a shared key the right-hand map's value wins.
+let union (k : Hashable, Eqable) v
+    : HashMap k v -> HashMap k v -> HashMap k v
+    = union_with (fn old, new -> new end)
+end
+
+# `union_with f a b`: on a shared key the value is `f (a's value) (b's value)`.
+let union_with (k : Hashable, Eqable) v
+    : (v -> v -> v) -> HashMap k v -> HashMap k v -> HashMap k v
+    = fn f, a, b ->
+        fold (fn acc, key, value -> insert_with (fn new, old -> f old new end) key value acc end) a b
+      end
+end
+
+# ---- the trie ----
+
+let maybe_fold a b
+    : b -> (a -> b) -> Maybe a -> b
+    = match
+        d, _, Maybe:Nil   -> d end
+        _, f, Maybe:Val x -> f x end
+    end
+end
+
+# which of the four children a hash selects at a depth
+let slot
+    : Int -> Int -> Int
+    = fn h, d -> bit_and (shift_right h (mul 2 d)) 3 end
+end
+
+let child k v
+    : Int -> ((HNode k v * HNode k v) * (HNode k v * HNode k v)) -> HNode k v
+    = match
+        0, ((a * _) * _) -> a end
+        1, ((_ * b) * _) -> b end
+        2, (_ * (c * _)) -> c end
+        _, (_ * (_ * d)) -> d end
+    end
+end
+
+let set_child k v
+    : Int -> HNode k v -> ((HNode k v * HNode k v) * (HNode k v * HNode k v)) -> ((HNode k v * HNode k v) * (HNode k v * HNode k v))
+    = match
+        0, n, ((_ * b) * cd) -> ((n * b) * cd) end
+        1, n, ((a * _) * cd) -> ((a * n) * cd) end
+        2, n, (ab * (_ * d)) -> (ab * (n * d)) end
+        _, n, (ab * (c * _)) -> (ab * (c * n)) end
+    end
+end
+
+let children k v
+    : ((HNode k v * HNode k v) * (HNode k v * HNode k v)) -> List (HNode k v)
+    = match
+        ((a * b) * (c * d)) -> [a, b, c, d] end
+    end
+end
+
+let is_empty_node k v
+    : HNode k v -> Bool
+    = match
+        HNode:Empty -> Bool:True end
+        _           -> Bool:False end
+    end
+end
+
+let is_branch k v
+    : HNode k v -> Bool
+    = match
+        HNode:Branch _ -> Bool:True end
+        _              -> Bool:False end
+    end
+end
+
+let node_hash k v
+    : HNode k v -> Int
+    = match
+        HNode:Leaf (h * _)      -> h end
+        HNode:Collision (h * _) -> h end
+        _                       -> 0 end
+    end
+end
+
+# A branch left with a single leaf (or collision list) is replaced by it, so the trie never
+# keeps a chain of one-child branches after removals.
+let normalize k v
+    : HNode k v -> HNode k v
+    = match
+        HNode:Branch q -> collapse (Prelude:filter (fn c -> not (is_empty_node c) end) (children q)) (HNode:Branch q) end
+        n              -> n end
+    end
+end
+
+let collapse k v
+    : List (HNode k v) -> HNode k v -> HNode k v
+    = match
+        [], _                  -> HNode:Empty end
+        List:Cons (x * []), b  -> cond (is_branch x) b x end
+        _, b                   -> b end
+    end
+end
+
+# a branch at depth d holding only `n` (whose hash is `h`)
+let lone_branch k v
+    : Int -> Int -> HNode k v -> HNode k v
+    = fn d, h, n -> HNode:Branch (set_child (slot h d) n ((HNode:Empty * HNode:Empty) * (HNode:Empty * HNode:Empty))) end
+end
+
+let get_node (k : Eqable) v
+    : Int -> Int -> k -> HNode k v -> Maybe v
+    = match
+        _, _, _, HNode:Empty -> Maybe:Nil end
+        _, h, key, HNode:Leaf (lh * (lk * lv)) ->
+            cond (and (eq lh h) (eq lk key)) (Maybe:Val lv) Maybe:Nil
+        end
+        _, h, key, HNode:Collision (ch * entries) ->
+            cond (eq ch h) (assoc_get key entries) Maybe:Nil
+        end
+        d, h, key, HNode:Branch q -> get_node (add d 1) h key (child (slot h d) q) end
+    end
+end
+
+let assoc_get (k : Eqable) v
+    : k -> List (k * v) -> Maybe v
+    = match
+        _, []                         -> Maybe:Nil end
+        key, List:Cons ((k2 * v2) * rest) -> cond (eq key k2) (Maybe:Val v2) (assoc_get key rest) end
+    end
+end
+
+# The one update routine. Returns the new node and how the entry count changed.
+let alter_node (k : Eqable) v
+    : Int -> Int -> k -> (Maybe v -> Maybe v) -> HNode k v -> (HNode k v * Int)
+    = match
+        _, h, key, f, HNode:Empty ->
+            alter_absent h key (f Maybe:Nil) HNode:Empty
+        end
+        d, h, key, f, HNode:Leaf (lh * (lk * lv)) ->
+            cond (eq lh h)
+                (alter_collision h key f (List:Cons ((lk * lv) * [])))
+                (alter_split d h key f (HNode:Leaf (lh * (lk * lv))) lh)
+        end
+        d, h, key, f, HNode:Collision (ch * entries) ->
+            cond (eq ch h)
+                (alter_collision h key f entries)
+                (alter_split d h key f (HNode:Collision (ch * entries)) ch)
+        end
+        d, h, key, f, HNode:Branch q ->
+            rebuild_branch (slot h d) q (alter_node (add d 1) h key f (child (slot h d) q))
+        end
+    end
+end
+
+# an entry with a new key where there is none yet: add it if `f` produced a value
+let alter_absent k v
+    : Int -> k -> Maybe v -> HNode k v -> (HNode k v * Int)
+    = match
+        h, key, Maybe:Val value, _ -> (HNode:Leaf (h * (key * value)) * 1) end
+        _, _, Maybe:Nil, n         -> (n * 0) end
+    end
+end
+
+# the key's hash differs from the node's: push the node down a level (into a branch) and
+# update there
+let alter_split (k : Eqable) v
+    : Int -> Int -> k -> (Maybe v -> Maybe v) -> HNode k v -> Int -> (HNode k v * Int)
+    = fn d, h, key, f, existing, eh ->
+        alter_node d h key f (lone_branch d eh existing)
+      end
+end
+
+# update inside a list of entries that all share one hash
+let alter_collision (k : Eqable) v
+    : Int -> k -> (Maybe v -> Maybe v) -> List (k * v) -> (HNode k v * Int)
+    = fn h, key, f, entries ->
+        collision_result h (alter_entries key (f (assoc_get key entries)) entries (assoc_has key entries))
+      end
+end
+
+let assoc_has (k : Eqable) v
+    : k -> List (k * v) -> Bool
+    = fn key, entries -> neq (maybe_map (const unit) (assoc_get key entries)) Maybe:Nil end
+end
+
+# (the new entries, change in count): replaces, adds, or removes `key` as `result` says
+let alter_entries (k : Eqable) v
+    : k -> Maybe v -> List (k * v) -> Bool -> (List (k * v) * Int)
+    = match
+        key, Maybe:Val value, entries, present ->
+            cond present
+                (map (fn e -> cond (eq (fst e) key) (key * value) e end) entries * 0)
+                (append entries [(key * value)] * 1)
+        end
+        key, Maybe:Nil, entries, present ->
+            cond present
+                (Prelude:filter (fn e -> neq (fst e) key end) entries * sub 0 1)
+                (entries * 0)
+        end
+    end
+end
+
+let collision_result k v
+    : Int -> (List (k * v) * Int) -> (HNode k v * Int)
+    = fn h -> match
+        ([] * delta)                      -> (HNode:Empty * delta) end
+        (List:Cons ((ek * ev) * []) * delta) -> (HNode:Leaf (h * (ek * ev)) * delta) end
+        (entries * delta)                 -> (HNode:Collision (h * entries) * delta) end
+      end
+    end
+end
+
+let rebuild_branch k v
+    : Int -> ((HNode k v * HNode k v) * (HNode k v * HNode k v)) -> (HNode k v * Int) -> (HNode k v * Int)
+    = fn s, q -> match
+        (n * delta) -> (normalize (HNode:Branch (set_child s n q)) * delta) end
+      end
+    end
+end
+
+let fold_node k v b
+    : (b -> k -> v -> b) -> b -> HNode k v -> b
+    = match
+        _, acc, HNode:Empty -> acc end
+        f, acc, HNode:Leaf (_ * (key * value)) -> f acc key value end
+        f, acc, HNode:Collision (_ * entries) -> foldl (fn a, e -> f a (fst e) (rst e) end) acc entries end
+        f, acc, HNode:Branch ((a * b) * (c * d)) ->
+            fold_node f (fold_node f (fold_node f (fold_node f acc a) b) c) d
+        end
+    end
+end
+
+let map_node k v w
+    : (v -> w) -> HNode k v -> HNode k w
+    = match
+        _, HNode:Empty -> HNode:Empty end
+        f, HNode:Leaf (h * (key * value)) -> HNode:Leaf (h * (key * f value)) end
+        f, HNode:Collision (h * entries) -> HNode:Collision (h * map (fn e -> (fst e * f (rst e)) end) entries) end
+        f, HNode:Branch ((a * b) * (c * d)) ->
+            HNode:Branch ((map_node f a * map_node f b) * (map_node f c * map_node f d))
+        end
+    end
+end
+
+# ---- show ----
+
+instance Showable (HashMap k v) is
+    let show (k : Showable) (v : Showable)
+        : HashMap k v -> String
+        = fn m -> concat "{" (concat (HashMap:show_entries (HashMap:to_list m)) "}") end
+    end
+end
+
+let show_entries (k : Showable) (v : Showable)
+    : List (k * v) -> String
+    = match
+        []                              -> [] end
+        List:Cons ((key * value) * [])  -> concat (show key) (concat ": " (show value)) end
+        List:Cons ((key * value) * rest) ->
+            concat (show key) (concat ": " (concat (show value) (concat ", " (show_entries rest))))
+        end
+    end
+end

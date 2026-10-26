@@ -1,0 +1,223 @@
+module Term is
+
+# The terminal: keypresses without waiting for Enter, the window size, and resize events.
+# (Colors and cursor movement are in the Ansi module.)
+#
+#     import file std/term.iota
+#
+#     # echo keys until q is pressed (or the input closes: `Eof` repeats forever)
+#     let loop : IO Unit
+#         = bind (fn k -> cond (or (eq k (Key:Ch 'q')) (eq k Key:Eof)) (return unit)
+#                              (println (show k) > then loop) end)
+#               Term:read_key
+#     end
+#     let main : IO Unit = Term:with_raw_mode loop end
+#
+# In raw mode nothing is echoed, input is delivered key by key, and Ctrl-C arrives as the key
+# `Ctrl 'c'` instead of stopping the program: handle it, or you cannot quit. The terminal is
+# put back as it was when the program ends, however it ends.
+#
+# The key functions also work when input is a pipe or a file (every byte is then a key), which
+# makes programs testable: `printf 'ab' | ./prog`.
+
+let prim_is_tty
+    : Int -> IO Int
+    = undefined
+end
+
+let prim_raw
+    : Int -> IO Int
+    = undefined
+end
+
+let prim_key
+    : Int -> IO Int
+    = undefined
+end
+
+let prim_cols
+    : IO Int
+    = undefined
+end
+
+let prim_rows
+    : IO Int
+    = undefined
+end
+
+let prim_resized
+    : IO Int
+    = undefined
+end
+
+# ---- is there a terminal? ----
+
+let stdin_is_tty
+    : IO Bool
+    = fmap (eq 1) (prim_is_tty 0)
+end
+
+let stdout_is_tty
+    : IO Bool
+    = fmap (eq 1) (prim_is_tty 1)
+end
+
+let stderr_is_tty
+    : IO Bool
+    = fmap (eq 1) (prim_is_tty 2)
+end
+
+# ---- size ----
+
+# The width in columns. Falls back to $COLUMNS, then 80, when there is no terminal.
+let cols
+    : IO Int
+    = prim_cols
+end
+
+let rows
+    : IO Int
+    = prim_rows
+end
+
+# (columns, rows)
+let size
+    : IO (Int * Int)
+    = bind (fn c -> fmap (fn r -> (c * r) end) prim_rows end) prim_cols
+end
+
+# True if the window was resized since the last time this (or `read_key`) reported it.
+let resized
+    : IO Bool
+    = fmap (eq 1) prim_resized
+end
+
+# ---- raw mode ----
+
+# Turns raw mode on or off. False if the input is not a terminal.
+let set_raw
+    : Bool -> IO Bool
+    = fn on -> fmap (eq 0) (prim_raw (cond on 1 0)) end
+end
+
+# Runs an action with raw mode on, then restores the terminal.
+let with_raw_mode a
+    : IO a -> IO a
+    = fn action ->
+        bind (fn on ->
+            bind (fn result ->
+                bind (fn off -> return result end) (set_raw Bool:False)
+            end) action
+        end) (set_raw Bool:True)
+      end
+end
+
+# ---- keys ----
+
+type Key = Ch Char + Ctrl Char + FKey Int + Enter + Tab + Backspace + Escape + ArrowUp + ArrowDown + ArrowLeft + ArrowRight + Home + End + Insert + Delete + PageUp + PageDown + Resize + Timeout + Eof
+end
+
+# `Ch c` is a typed character (including non-ASCII ones); `Ctrl c` is Ctrl held with a
+# letter (`Ctrl 'c'` is Ctrl-C); `FKey 5` is F5. `Resize` means the window changed size
+# (ask `size`); `Timeout` that nothing was pressed in time; `Eof` that the input ended.
+
+# Waits for a key.
+let read_key
+    : IO Key
+    = fmap key_of_code (prim_key -1)
+end
+
+# Waits at most this many milliseconds; `Timeout` if nothing was pressed.
+let read_key_timeout
+    : Int -> IO Key
+    = fn ms -> fmap key_of_code (prim_key ms) end
+end
+
+# The key that is waiting, if any, without blocking.
+let poll_key
+    : IO (Maybe Key)
+    = fmap (fn k -> cond (eq (key_name k) "Timeout") Maybe:Nil (Maybe:Val k) end) (read_key_timeout 0)
+end
+
+let key_of_code
+    : Int -> Key
+    = fn c ->
+        cond (ls c 0)
+            (cond (eq c -1) Key:Timeout Key:Eof)
+            (cond (gre c 1114112) (special (sub c 1114112)) (plain c))
+      end
+end
+
+let plain
+    : Int -> Key
+    = fn c ->
+        cond (or (eq c 13) (eq c 10)) Key:Enter
+        (cond (eq c 9) Key:Tab
+        (cond (or (eq c 127) (eq c 8)) Key:Backspace
+        (cond (eq c 27) Key:Escape
+        (cond (and (gre c 1) (lse c 26)) (Key:Ctrl (chr (add c 96)))
+        (Key:Ch (chr c))))))
+      end
+end
+
+let special
+    : Int -> Key
+    = match
+        1   -> Key:ArrowUp end
+        2   -> Key:ArrowDown end
+        3   -> Key:ArrowRight end
+        4   -> Key:ArrowLeft end
+        5   -> Key:Home end
+        6   -> Key:End end
+        7   -> Key:Insert end
+        8   -> Key:Delete end
+        9   -> Key:PageUp end
+        10  -> Key:PageDown end
+        255 -> Key:Resize end
+        n   -> Key:FKey (add (sub n 16) 1) end
+    end
+end
+
+let key_name
+    : Key -> String
+    = match
+        Key:Ch c       -> append "Ch " [c] end
+        Key:Ctrl c     -> append "Ctrl-" [c] end
+        Key:FKey n     -> append "F" (show n) end
+        Key:Enter      -> "Enter" end
+        Key:Tab        -> "Tab" end
+        Key:Backspace  -> "Backspace" end
+        Key:Escape     -> "Escape" end
+        Key:ArrowUp    -> "Up" end
+        Key:ArrowDown  -> "Down" end
+        Key:ArrowLeft  -> "Left" end
+        Key:ArrowRight -> "Right" end
+        Key:Home       -> "Home" end
+        Key:End        -> "End" end
+        Key:Insert     -> "Insert" end
+        Key:Delete     -> "Delete" end
+        Key:PageUp     -> "PageUp" end
+        Key:PageDown   -> "PageDown" end
+        Key:Resize     -> "Resize" end
+        Key:Timeout    -> "Timeout" end
+        Key:Eof        -> "Eof" end
+    end
+end
+
+instance Eqable Key is
+    let eq
+        : Key -> Key -> Bool
+        = fn a, b -> eq (Term:key_name a) (Term:key_name b) end
+    end
+    let neq
+        : Key -> Key -> Bool
+        = fn a, b -> neq (Term:key_name a) (Term:key_name b) end
+    end
+end
+
+instance Showable Key is
+    let show
+        : Key -> String
+        = Term:key_name
+    end
+end

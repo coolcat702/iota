@@ -1,0 +1,152 @@
+module Process is
+
+# Running other programs, and information about the current process.
+#
+#     import file std/process.iota
+#
+#     bind (fn r -> ... end) (Process:run "git" ["rev-parse", "HEAD"])
+#
+# The program is looked up on $PATH. Arguments are passed as they are: there is no shell
+# involved (so no quoting problems) unless you ask for one with `shell`.
+
+import file std/str.iota
+
+let prim_run
+    : String -> String -> Int -> IO String
+    = undefined
+end
+
+# What a finished program left behind: (exit code, standard output, standard error).
+# A program killed by a signal reports 128 plus the signal number.
+type Output = Int * (String * String)
+end
+
+let exit_code
+    : Output -> Int
+    = fst
+end
+
+let stdout
+    : Output -> String
+    = fn o -> fst (rst o) end
+end
+
+let stderr
+    : Output -> String
+    = fn o -> rst (rst o) end
+end
+
+let success
+    : Output -> Bool
+    = fn o -> eq (exit_code o) 0 end
+end
+
+# Runs a program with its standard output and error captured (and nothing on its input).
+let run
+    : String -> List String -> IO (Either IOError Output)
+    = fn program, args -> run_with_input program args [] end
+end
+
+# Like `run`, but feeds the text to the program's standard input.
+let run_with_input
+    : String -> List String -> String -> IO (Either IOError Output)
+    = fn program, args, input ->
+        fmap (comp (either_flat decode_capture) io_decode) (prim_run (spec program args) input 0)
+      end
+end
+
+# Runs a program that shares this program's terminal (it can prompt, draw, and so on) and
+# returns its exit code once it finishes.
+let inherit
+    : String -> List String -> IO (Either IOError Int)
+    = fn program, args ->
+        fmap (comp (either_map first_int) io_decode) (prim_run (spec program args) [] 1)
+      end
+end
+
+# Runs a command line through /bin/sh, capturing its output.
+let shell
+    : String -> IO (Either IOError Output)
+    = fn command -> run "/bin/sh" ["-c", command] end
+end
+
+# Runs a command line through /bin/sh on this program's terminal.
+let shell_inherit
+    : String -> IO (Either IOError Int)
+    = fn command -> inherit "/bin/sh" ["-c", command] end
+end
+
+# The id of this process.
+let pid
+    : IO Int
+    = prim_sys_pid
+end
+
+# The environment, as (name, value) pairs.
+let environ
+    : IO (List (String * String))
+    = fmap (comp (map split_assignment) split_nuls) prim_sys_environ
+end
+
+# ---- decoding the runtime's answer ----
+
+# the program and its arguments, each ended by a NUL
+let spec
+    : String -> List String -> String
+    = fn program, args -> foldr (fn a, acc -> append a (List:Cons ('\0' * acc)) end) [] (List:Cons (program * args)) end
+end
+
+let either_flat a b e
+    : (a -> Either e b) -> Either e a -> Either e b
+    = fn f -> match
+        Either:Left x  -> Either:Left x end
+        Either:Right v -> f v end
+      end
+    end
+end
+
+let int_or_zero
+    : String -> Int
+    = fn s -> map_nil_same 0 (Str:parse_int s) end
+end
+
+# "<code>\0" -> code
+let first_int
+    : String -> Int
+    = fn s -> int_or_zero (take_while (fn c -> neq (ord c) 0 end) s) end
+end
+
+# "<code>\0<stdout length>\0<stdout><stderr>"
+let decode_capture
+    : String -> Either IOError Output
+    = fn payload ->
+        Either:Right (capture_parts (first_int payload) (drop_past_nul payload))
+      end
+end
+
+let capture_parts
+    : Int -> String -> Output
+    = fn code, rest ->
+        split_streams code (first_int rest) (drop_past_nul rest)
+      end
+end
+
+let split_streams
+    : Int -> Int -> String -> Output
+    = fn code, n, streams -> (code * (take n streams * drop n streams)) end
+end
+
+let split_assignment
+    : String -> (String * String)
+    = fn kv ->
+        (take_while (fn c -> neq c '=' end) kv * drop 1 (drop_while_not_eq kv))
+      end
+end
+
+let drop_while_not_eq
+    : String -> String
+    = match
+        []                 -> [] end
+        List:Cons (c * cs) -> cond (eq c '=') (List:Cons (c * cs)) (drop_while_not_eq cs) end
+    end
+end

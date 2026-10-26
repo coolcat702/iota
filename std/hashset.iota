@@ -1,0 +1,119 @@
+module HashSet is
+
+# An immutable hash set (a `HashMap` whose values are `Unit`). Elements need `Hashable` and
+# `Eqable`. Every update returns a new set and leaves the old one intact.
+#
+#     import file std/hashset.iota
+#
+#     let s : HashSet Int = HashSet:from_list [3, 1, 2, 3] end
+#     HashSet:member 2 s          # True
+#     HashSet:size s              # 3
+#
+# Iteration order (`to_list`, `fold`, ...) is deterministic but unspecified.
+
+import file std/hashmap.iota
+
+type HashSet a = HS (HashMap a Unit)
+end
+
+let empty a
+    : HashSet a
+    = HashSet:HS HashMap:empty
+end
+
+let inner a
+    : HashSet a -> HashMap a Unit
+    = match
+        HashSet:HS m -> m end
+    end
+end
+
+let singleton (a : Hashable, Eqable)
+    : a -> HashSet a
+    = fn x -> insert x empty end
+end
+
+let from_list (a : Hashable, Eqable)
+    : List a -> HashSet a
+    = foldl (fn s, x -> insert x s end) empty
+end
+
+let size a
+    : HashSet a -> Int
+    = fn s -> HashMap:size (inner s) end
+end
+
+let is_empty a
+    : HashSet a -> Bool
+    = fn s -> HashMap:is_empty (inner s) end
+end
+
+let member (a : Hashable, Eqable)
+    : a -> HashSet a -> Bool
+    = fn x, s -> HashMap:member x (inner s) end
+end
+
+let insert (a : Hashable, Eqable)
+    : a -> HashSet a -> HashSet a
+    = fn x, s -> HashSet:HS (HashMap:insert x unit (inner s)) end
+end
+
+let remove (a : Hashable, Eqable)
+    : a -> HashSet a -> HashSet a
+    = fn x, s -> HashSet:HS (HashMap:remove x (inner s)) end
+end
+
+# `fold f acc s` calls `f acc x` for every element.
+let fold a b
+    : (b -> a -> b) -> b -> HashSet a -> b
+    = fn f, acc, s -> HashMap:fold (fn r, x, u -> f r x end) acc (inner s) end
+end
+
+let to_list a
+    : HashSet a -> List a
+    = fn s -> HashMap:keys (inner s) end
+end
+
+let filter (a : Hashable, Eqable)
+    : (a -> Bool) -> HashSet a -> HashSet a
+    = fn p, s -> HashSet:HS (HashMap:filter (fn x, u -> p x end) (inner s)) end
+end
+
+let union (a : Hashable, Eqable)
+    : HashSet a -> HashSet a -> HashSet a
+    = fn x, y -> fold (fn acc, e -> insert e acc end) x y end
+end
+
+# the elements of both sets
+let intersection (a : Hashable, Eqable)
+    : HashSet a -> HashSet a -> HashSet a
+    = fn x, y -> filter (fn e -> member e y end) x end
+end
+
+# the elements of the first set that are not in the second
+let difference (a : Hashable, Eqable)
+    : HashSet a -> HashSet a -> HashSet a
+    = fn x, y -> filter (fn e -> not (member e y) end) x end
+end
+
+# every element of the first set is in the second
+let is_subset (a : Hashable, Eqable)
+    : HashSet a -> HashSet a -> Bool
+    = fn x, y -> fold (fn ok, e -> and ok (member e y) end) Bool:True x end
+end
+
+instance Showable (HashSet a) is
+    let show (a : Showable)
+        : HashSet a -> String
+        = fn s -> concat "{" (concat (HashSet:show_items (HashSet:to_list s)) "}") end
+    end
+end
+
+let show_items (a : Showable)
+    : List a -> String
+    = match
+        []                  -> [] end
+        List:Cons (x * [])  -> show x end
+        List:Cons (x * xs)  -> concat (show x) (concat ", " (HashSet:show_items xs)) end
+    end
+end

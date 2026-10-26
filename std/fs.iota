@@ -1,0 +1,142 @@
+module Fs is
+
+# Directories, metadata and file management. (Reading and writing file contents is in the
+# Prelude: `read_file`, `write_file`, `append_file`, `file_exists`, `is_file`, `is_dir`.)
+#
+#     import file std/fs.iota
+#
+# Every fallible operation is an `IO (Either IOError a)`. Chain them with `io_and_then`.
+# Paths are plain strings; see the Path module for taking them apart and joining them.
+
+import file std/str.iota
+import file std/path.iota
+import file std/sort.iota
+
+# The names (not full paths) in a directory, sorted. "." and ".." are not included.
+let list_dir
+    : String -> IO (Either IOError (List String))
+    = fn path -> fmap (comp (either_map (comp Sort:sort split_nuls)) io_decode) (prim_fs_list path) end
+end
+
+# Like `list_dir`, but each entry joined onto the directory: `list_dir_paths "src"` gives
+# ["src/a.iota", "src/b.iota"].
+let list_dir_paths
+    : String -> IO (Either IOError (List String))
+    = fn path -> fmap (either_map (map (Path:join path))) (list_dir path) end
+end
+
+# Creates one directory; its parent must exist.
+let create_dir
+    : String -> IO (Either IOError Unit)
+    = fn path -> fmap io_decode_unit (prim_fs_mkdir path) end
+end
+
+# Creates a directory and any missing parents; succeeds if it already exists.
+let create_dir_all
+    : String -> IO (Either IOError Unit)
+    = fn path ->
+        cond (Fs:is_top path)
+            (return (Either:Right unit))
+            (bind (Fs:create_unless_dir path) (is_dir path))
+      end
+end
+
+let is_top
+    : String -> Bool
+    = fn path -> or (Str:is_empty path) (or (eq path ".") (eq path "/")) end
+end
+
+let create_unless_dir
+    : String -> Bool -> IO (Either IOError Unit)
+    = fn path, exists ->
+        cond exists
+            (return (Either:Right unit))
+            (io_and_then (fn u -> create_dir path end) (create_dir_all (Path:dirname path)))
+      end
+end
+
+# Deletes a file (or an empty directory).
+let remove
+    : String -> IO (Either IOError Unit)
+    = fn path -> fmap io_decode_unit (prim_fs_remove path) end
+end
+
+let rename
+    : String -> String -> IO (Either IOError Unit)
+    = fn from, to -> fmap io_decode_unit (prim_fs_rename from to) end
+end
+
+# Copies the bytes of a file (any kind of content, not just text).
+let copy_file
+    : String -> String -> IO (Either IOError Unit)
+    = fn from, to ->
+        io_and_then (fn bytes -> write_file_bytes to bytes end) (read_file_bytes from)
+      end
+end
+
+let current_dir
+    : IO (Either IOError String)
+    = fmap io_decode prim_fs_cwd
+end
+
+let set_current_dir
+    : String -> IO (Either IOError Unit)
+    = fn path -> fmap io_decode_unit (prim_fs_chdir path) end
+end
+
+# The absolute path with symlinks resolved; the path must exist.
+let canonicalize
+    : String -> IO (Either IOError String)
+    = fn path -> fmap io_decode (prim_fs_realpath path) end
+end
+
+# ---- metadata ----
+
+# (kind, size in bytes, modification time in seconds since 1970); kind is 1 for a file,
+# 2 for a directory and 3 for anything else.
+let stat_fields
+    : String -> IO (Either IOError (List Float))
+    = fn path ->
+        fmap (comp (either_map (fn s -> map (fn w -> map_nil_same 0.0 (parse w) end) (Str:words s) end)) io_decode) (prim_fs_stat path)
+      end
+end
+
+# The size of a file in bytes (clamped to the largest Int).
+let file_size
+    : String -> IO (Either IOError Int)
+    = fn path -> fmap (either_map (fn fs -> float_to_int (nth_or 1 0.0 fs) end)) (stat_fields path) end
+end
+
+# The last modification time, in seconds since 1970.
+let modified_time
+    : String -> IO (Either IOError Float)
+    = fn path -> fmap (either_map (nth_or 2 0.0)) (stat_fields path) end
+end
+
+let nth_or a
+    : Int -> a -> List a -> a
+    = fn i, d, xs -> map_nil_same d (idx_opt i xs) end
+end
+
+let idx_opt a
+    : Int -> List a -> Maybe a
+    = match
+        _, []                 -> Maybe:Nil end
+        0, List:Cons (x * _)  -> Maybe:Val x end
+        i, List:Cons (_ * xs) -> idx_opt (sub i 1) xs end
+    end
+end
+
+# ---- whole files as lines ----
+
+# The lines of a file ("\n" or "\r\n" endings; a final line break adds no empty line).
+let read_lines
+    : String -> IO (Either IOError (List String))
+    = fn path -> fmap (either_map Str:lines) (read_file path) end
+end
+
+# Writes the lines, each followed by "\n".
+let write_lines
+    : String -> List String -> IO (Either IOError Unit)
+    = fn path, ls -> write_file path (Str:unlines ls) end
+end

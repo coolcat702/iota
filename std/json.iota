@@ -1,0 +1,743 @@
+module Json is
+
+# JSON parsing and serialization (RFC 8259).
+#
+#     import file std/json.iota
+#
+#     Json:parse "{\"a\": [1, 2.5, null]}"      # Right (JObj [("a", JArr [...])])
+#     Json:stringify value                       # compact text
+#     Json:pretty value                          # indented text
+#
+# A document is a `Json` value:
+#
+#     JNull | JBool Bool | JNum Float | JStr String | JArr (List Json) | JObj (List (String * Json))
+#
+# Numbers are `Float`s (so whole numbers up to 2^53 are exact); `as_int` gives an Int back.
+# Objects keep their members in source order, and a repeated key stays repeated. `parse` is
+# strict: no comments, no trailing commas, no leading zeros. Failures read like
+# "expected ',' or ']' at offset 12" (the offset counts characters).
+#
+# Build values with the helpers (`Json:obj [("n", Json:int 3)]`), look into them with `get`,
+# `at` and `path`, and pull out plain values with `as_string`, `as_float`, ...
+
+import file std/str.iota
+
+type Json = JNull + JBool Bool + JNum Float + JStr String + JArr (List Json) + JObj (List (String * Json))
+end
+
+# the result of parsing a value: an error (message, characters left unread) or the value and
+# the text after it
+type Parsed = Either (String * Int) (Json * String)
+end
+
+type StrParsed = Either (String * Int) (String * String)
+end
+
+# ---- building ----
+
+let null
+    : Json
+    = Json:JNull
+end
+
+let bool
+    : Bool -> Json
+    = Json:JBool
+end
+
+let num
+    : Float -> Json
+    = Json:JNum
+end
+
+let int
+    : Int -> Json
+    = fn n -> Json:JNum (int_to_float n) end
+end
+
+let string
+    : String -> Json
+    = Json:JStr
+end
+
+let array
+    : List Json -> Json
+    = Json:JArr
+end
+
+# `obj [("name", Json:string "x"), ("n", Json:int 1)]`
+let obj
+    : List (String * Json) -> Json
+    = Json:JObj
+end
+
+# ---- looking inside ----
+
+let is_null
+    : Json -> Bool
+    = match
+        Json:JNull -> Bool:True end
+        _          -> Bool:False end
+    end
+end
+
+# the value of an object member (the first one with that name)
+let get
+    : String -> Json -> Maybe Json
+    = match
+        key, Json:JObj members -> lookup key members end
+        _, _                   -> Maybe:Nil end
+    end
+end
+
+let lookup
+    : String -> List (String * Json) -> Maybe Json
+    = match
+        _, []                         -> Maybe:Nil end
+        key, List:Cons ((k * v) * rest) -> cond (eq key k) (Maybe:Val v) (lookup key rest) end
+    end
+end
+
+# the element of an array at a position (from 0)
+let at
+    : Int -> Json -> Maybe Json
+    = match
+        i, Json:JArr xs -> cond (ls i 0) Maybe:Nil (first (drop i xs)) end
+        _, _            -> Maybe:Nil end
+    end
+end
+
+let first a
+    : List a -> Maybe a
+    = match
+        []                -> Maybe:Nil end
+        List:Cons (x * _) -> Maybe:Val x end
+    end
+end
+
+# Follows object keys: `path ["user", "name"] doc`.
+let path
+    : List String -> Json -> Maybe Json
+    = match
+        [], j                    -> Maybe:Val j end
+        List:Cons (k * ks), j    -> path_next ks (get k j) end
+    end
+end
+
+let path_next
+    : List String -> Maybe Json -> Maybe Json
+    = match
+        _, Maybe:Nil    -> Maybe:Nil end
+        ks, Maybe:Val j -> path ks j end
+    end
+end
+
+let as_string
+    : Json -> Maybe String
+    = match
+        Json:JStr s -> Maybe:Val s end
+        _           -> Maybe:Nil end
+    end
+end
+
+let as_float
+    : Json -> Maybe Float
+    = match
+        Json:JNum f -> Maybe:Val f end
+        _           -> Maybe:Nil end
+    end
+end
+
+# a number that is a whole number within the Int range
+let as_int
+    : Json -> Maybe Int
+    = match
+        Json:JNum f -> cond (eq f (int_to_float (float_to_int f))) (Maybe:Val (float_to_int f)) Maybe:Nil end
+        _           -> Maybe:Nil end
+    end
+end
+
+let as_bool
+    : Json -> Maybe Bool
+    = match
+        Json:JBool b -> Maybe:Val b end
+        _            -> Maybe:Nil end
+    end
+end
+
+let as_list
+    : Json -> Maybe (List Json)
+    = match
+        Json:JArr xs -> Maybe:Val xs end
+        _            -> Maybe:Nil end
+    end
+end
+
+let as_object
+    : Json -> Maybe (List (String * Json))
+    = match
+        Json:JObj ms -> Maybe:Val ms end
+        _            -> Maybe:Nil end
+    end
+end
+
+# ---- parsing ----
+
+# Reads one JSON document (surrounding white space is fine, anything else after it is not).
+let parse
+    : String -> Either String Json
+    = fn s -> finish (len s) (parse_value (skip_ws s)) end
+end
+
+let finish
+    : Int -> Parsed -> Either String Json
+    = fn total -> match
+        Either:Left (msg * left)  -> Either:Left (error_text msg (sub total left)) end
+        Either:Right (v * rest)   -> trailing total v (skip_ws rest) end
+      end
+    end
+end
+
+let trailing
+    : Int -> Json -> String -> Either String Json
+    = match
+        _, v, []   -> Either:Right v end
+        total, _, rest -> Either:Left (error_text "unexpected characters after the value" (sub total (len rest))) end
+    end
+end
+
+let error_text
+    : String -> Int -> String
+    = fn msg, offset -> concat msg (concat " at offset " (show offset)) end
+end
+
+let is_ws
+    : Char -> Bool
+    = fn c -> or (or (eq c ' ') (eq c '\t')) (or (eq c '\n') (eq c '\r')) end
+end
+
+let skip_ws
+    : String -> String
+    = Str:drop_while is_ws
+end
+
+let err a
+    : String -> String -> Either (String * Int) a
+    = fn msg, at -> Either:Left (msg * len at) end
+end
+
+let parse_value
+    : String -> Parsed
+    = match
+        []                 -> err "unexpected end of input" [] end
+        List:Cons (c * cs) -> value_at c cs (List:Cons (c * cs)) end
+    end
+end
+
+let value_at
+    : Char -> String -> String -> Parsed
+    = match
+        '{', rest, _ -> parse_object (skip_ws rest) end
+        '[', rest, _ -> parse_array (skip_ws rest) end
+        '"', rest, _ -> string_value (parse_string rest) end
+        't', _, whole -> literal "true" (Json:JBool Bool:True) whole end
+        'f', _, whole -> literal "false" (Json:JBool Bool:False) whole end
+        'n', _, whole -> literal "null" Json:JNull whole end
+        c, _, whole   -> cond (or (eq c '-') (Str:is_digit c)) (parse_number whole) (err "unexpected character" whole) end
+    end
+end
+
+let string_value
+    : StrParsed -> Parsed
+    = match
+        Either:Left e          -> Either:Left e end
+        Either:Right (s * rest) -> Either:Right (Json:JStr s * rest) end
+    end
+end
+
+let literal
+    : String -> Json -> String -> Parsed
+    = fn word, value, whole ->
+        cond (Str:starts_with word whole)
+            (Either:Right (value * drop (len word) whole))
+            (err "invalid literal" whole)
+      end
+end
+
+# -- arrays (after the "[" and white space)
+
+let parse_array
+    : String -> Parsed
+    = match
+        List:Cons (']' * r) -> Either:Right (Json:JArr [] * r) end
+        s                   -> array_items [] s end
+    end
+end
+
+let array_items
+    : List Json -> String -> Parsed
+    = fn acc, s -> after_item acc (parse_value s) end
+end
+
+let after_item
+    : List Json -> Parsed -> Parsed
+    = fn acc -> match
+        Either:Left e           -> Either:Left e end
+        Either:Right (v * rest) -> array_sep (List:Cons (v * acc)) (skip_ws rest) end
+      end
+    end
+end
+
+let array_sep
+    : List Json -> String -> Parsed
+    = match
+        acc, List:Cons (',' * r) -> array_items acc (skip_ws r) end
+        acc, List:Cons (']' * r) -> Either:Right (Json:JArr (reverse acc) * r) end
+        _, s                     -> err "expected ',' or ']'" s end
+    end
+end
+
+# -- objects (after the "{" and white space)
+
+let parse_object
+    : String -> Parsed
+    = match
+        List:Cons ('}' * r) -> Either:Right (Json:JObj [] * r) end
+        s                   -> object_members [] s end
+    end
+end
+
+let object_members
+    : List (String * Json) -> String -> Parsed
+    = match
+        acc, List:Cons ('"' * r) -> after_key acc (parse_string r) end
+        _, s                     -> err "expected a string as the member name" s end
+    end
+end
+
+let after_key
+    : List (String * Json) -> StrParsed -> Parsed
+    = fn acc -> match
+        Either:Left e            -> Either:Left e end
+        Either:Right (k * rest)  -> colon acc k (skip_ws rest) end
+      end
+    end
+end
+
+let colon
+    : List (String * Json) -> String -> String -> Parsed
+    = match
+        acc, k, List:Cons (':' * r) -> after_member acc k (parse_value (skip_ws r)) end
+        _, _, s                     -> err "expected ':'" s end
+    end
+end
+
+let after_member
+    : List (String * Json) -> String -> Parsed -> Parsed
+    = fn acc, k -> match
+        Either:Left e           -> Either:Left e end
+        Either:Right (v * rest) -> object_sep (List:Cons ((k * v) * acc)) (skip_ws rest) end
+      end
+    end
+end
+
+let object_sep
+    : List (String * Json) -> String -> Parsed
+    = match
+        acc, List:Cons (',' * r) -> object_members acc (skip_ws r) end
+        acc, List:Cons ('}' * r) -> Either:Right (Json:JObj (reverse acc) * r) end
+        _, s                     -> err "expected ',' or '}'" s end
+    end
+end
+
+# -- strings (after the opening quote)
+
+let parse_string
+    : String -> StrParsed
+    = fn s -> string_loop [] s end
+end
+
+# `acc` holds the characters read so far, last one first
+let string_loop
+    : String -> String -> StrParsed
+    = match
+        _, []                     -> err "unterminated string" [] end
+        acc, List:Cons ('"' * r)  -> Either:Right (reverse acc * r) end
+        acc, List:Cons ('\\' * r) -> string_escape acc r end
+        acc, List:Cons (c * r)    ->
+            cond (ls (ord c) 32)
+                (err "control character in string" (List:Cons (c * r)))
+                (string_loop (List:Cons (c * acc)) r)
+        end
+    end
+end
+
+let string_escape
+    : String -> String -> StrParsed
+    = match
+        _, []                    -> err "unterminated string" [] end
+        acc, List:Cons ('"' * r) -> string_loop (List:Cons ('"' * acc)) r end
+        acc, List:Cons ('\\' * r) -> string_loop (List:Cons ('\\' * acc)) r end
+        acc, List:Cons ('/' * r) -> string_loop (List:Cons ('/' * acc)) r end
+        acc, List:Cons ('b' * r) -> string_loop (List:Cons (chr 8 * acc)) r end
+        acc, List:Cons ('f' * r) -> string_loop (List:Cons (chr 12 * acc)) r end
+        acc, List:Cons ('n' * r) -> string_loop (List:Cons ('\n' * acc)) r end
+        acc, List:Cons ('r' * r) -> string_loop (List:Cons ('\r' * acc)) r end
+        acc, List:Cons ('t' * r) -> string_loop (List:Cons ('\t' * acc)) r end
+        acc, List:Cons ('u' * r) -> unicode_escape acc r end
+        _, s                     -> err "invalid escape sequence" s end
+    end
+end
+
+# the value of four hex digits, or -1
+let hex4
+    : String -> Int
+    = fn s ->
+        cond (and (eq (len (take 4 s)) 4) (all_hex (take 4 s)))
+            (foldl (fn a, c -> add (mul a 16) (hex_digit c) end) 0 (take 4 s))
+            -1
+      end
+end
+
+let all_hex
+    : String -> Bool
+    = match
+        []                 -> Bool:True end
+        List:Cons (c * cs) -> and (gre (hex_digit c) 0) (all_hex cs) end
+    end
+end
+
+# 0-15, or -1 for a character that is not a hex digit (and 0 stands for "0" itself)
+let hex_digit
+    : Char -> Int
+    = fn c ->
+        cond (Str:is_digit c) (sub (ord c) 48)
+        (cond (and (gre c 'a') (lse c 'f')) (add (sub (ord c) 97) 10)
+        (cond (and (gre c 'A') (lse c 'F')) (add (sub (ord c) 65) 10)
+        -1))
+      end
+end
+
+let unicode_escape
+    : String -> String -> StrParsed
+    = fn acc, s -> unicode_unit acc (hex4 s) (drop 4 s) s end
+end
+
+# a high surrogate must be followed by \uXXXX holding the low one
+let unicode_unit
+    : String -> Int -> String -> String -> StrParsed
+    = fn acc, hi, rest, whole ->
+        cond (ls hi 0)
+            (err "invalid \\u escape" whole)
+            (cond (and (gre hi 55296) (lse hi 56319))
+                (surrogate_pair acc hi rest)
+                (cond (and (gre hi 56320) (lse hi 57343))
+                    (string_loop (List:Cons (chr 65533 * acc)) rest)
+                    (string_loop (List:Cons (chr hi * acc)) rest)))
+      end
+end
+
+let surrogate_pair
+    : String -> Int -> String -> StrParsed
+    = match
+        acc, hi, List:Cons ('\\' * List:Cons ('u' * r)) -> combine acc hi (hex4 r) (drop 4 r) end
+        acc, _, rest -> string_loop (List:Cons (chr 65533 * acc)) rest end
+    end
+end
+
+let combine
+    : String -> Int -> Int -> String -> StrParsed
+    = fn acc, hi, lo, rest ->
+        cond (and (gre lo 56320) (lse lo 57343))
+            (string_loop (List:Cons (chr (add 65536 (add (mul (sub hi 55296) 1024) (sub lo 56320))) * acc)) rest)
+            (string_loop (List:Cons (chr 65533 * acc)) rest)
+      end
+end
+
+# -- numbers: -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
+
+let parse_number
+    : String -> Parsed
+    = fn s ->
+        cond (Str:starts_with "-" s) (number_ints Bool:True (drop 1 s)) (number_ints Bool:False s)
+      end
+end
+
+let number_ints
+    : Bool -> String -> Parsed
+    = fn neg, s ->
+        number_check_ints neg (take_while Str:is_digit s) (Str:drop_while Str:is_digit s) s
+      end
+end
+
+let number_check_ints
+    : Bool -> String -> String -> String -> Parsed
+    = fn neg, ints, rest, whole ->
+        cond (Str:is_empty ints)
+            (err "invalid number" whole)
+            (cond (and (gr (len ints) 1) (eq (take 1 ints) "0"))
+                (err "numbers cannot have leading zeros" whole)
+                (number_frac neg ints rest))
+      end
+end
+
+let number_frac
+    : Bool -> String -> String -> Parsed
+    = match
+        neg, ints, List:Cons ('.' * r) ->
+            number_frac_digits neg ints (take_while Str:is_digit r) (Str:drop_while Str:is_digit r) r
+        end
+        neg, ints, rest -> number_exp neg ints [] rest end
+    end
+end
+
+let number_frac_digits
+    : Bool -> String -> String -> String -> String -> Parsed
+    = fn neg, ints, fs, rest, whole ->
+        cond (Str:is_empty fs) (err "expected digits after the decimal point" whole) (number_exp neg ints fs rest)
+      end
+end
+
+let number_exp
+    : Bool -> String -> String -> String -> Parsed
+    = match
+        neg, ints, fs, List:Cons (c * r) ->
+            cond (or (eq c 'e') (eq c 'E'))
+                (exp_sign neg ints fs r)
+                (number_done neg ints fs 0 (List:Cons (c * r)))
+        end
+        neg, ints, fs, [] -> number_done neg ints fs 0 [] end
+    end
+end
+
+let exp_sign
+    : Bool -> String -> String -> String -> Parsed
+    = match
+        neg, ints, fs, List:Cons ('-' * r) -> exp_digits neg ints fs Bool:True r end
+        neg, ints, fs, List:Cons ('+' * r) -> exp_digits neg ints fs Bool:False r end
+        neg, ints, fs, r                   -> exp_digits neg ints fs Bool:False r end
+    end
+end
+
+let exp_digits
+    : Bool -> String -> String -> Bool -> String -> Parsed
+    = fn neg, ints, fs, eneg, r ->
+        cond (Str:is_empty (take_while Str:is_digit r))
+            (err "expected digits in the exponent" r)
+            (number_done neg ints fs
+                (signed eneg (digits_value (take_while Str:is_digit r)))
+                (Str:drop_while Str:is_digit r))
+      end
+end
+
+let signed
+    : Bool -> Int -> Int
+    = fn neg, n -> cond neg (sub 0 n) n end
+end
+
+# an enormous exponent is clamped (the result is then 0 or infinity anyway)
+let digits_value
+    : String -> Int
+    = fn ds -> cond (gr (len ds) 4) 9999 (foldl (fn a, c -> add (mul a 10) (sub (ord c) 48) end) 0 ds) end
+end
+
+let number_done
+    : Bool -> String -> String -> Int -> String -> Parsed
+    = fn neg, ints, fs, e, rest ->
+        Either:Right (Json:JNum (make_float neg (append ints fs) (sub e (len fs))) * rest)
+      end
+end
+
+# digits (as one whole number) times 10^scale
+let make_float
+    : Bool -> String -> Int -> Float
+    = fn neg, digits, scale ->
+        negate_if neg (scale_by (foldl (fn a, c -> add (mul a 10.0) (int_to_float (sub (ord c) 48)) end) 0.0 digits) scale)
+      end
+end
+
+let scale_by
+    : Float -> Int -> Float
+    = fn m, k -> cond (gre k 0) (mul m (pow10 (min_int k 400))) (div m (pow10 (min_int (sub 0 k) 400))) end
+end
+
+let min_int
+    : Int -> Int -> Int
+    = fn a, b -> cond (ls a b) a b end
+end
+
+let pow10
+    : Int -> Float
+    = fn n -> cond (lse n 0) 1.0 (mul 10.0 (pow10 (sub n 1))) end
+end
+
+let negate_if
+    : Bool -> Float -> Float
+    = fn neg, f -> cond neg (sub 0.0 f) f end
+end
+
+# ---- writing ----
+
+# Compact text, no white space.
+let stringify
+    : Json -> String
+    = match
+        Json:JNull    -> "null" end
+        Json:JBool b  -> cond b "true" "false" end
+        Json:JNum f   -> number_text f end
+        Json:JStr s   -> quote s end
+        Json:JArr xs  -> append "[" (append (Str:join "," (map stringify xs)) "]") end
+        Json:JObj ms  -> append "{" (append (Str:join "," (map member ms)) "}") end
+    end
+end
+
+let member
+    : (String * Json) -> String
+    = fn kv -> append (quote (fst kv)) (append ":" (stringify (rst kv))) end
+end
+
+# Indented text: two spaces per level, one array element or member per line.
+let pretty
+    : Json -> String
+    = fn j -> pretty_at 0 j end
+end
+
+let pretty_at
+    : Int -> Json -> String
+    = match
+        n, Json:JArr xs -> cond (is_empty_list xs) "[]" (pretty_array n xs) end
+        n, Json:JObj ms -> cond (is_empty_list ms) "{}" (pretty_object n ms) end
+        _, j            -> stringify j end
+    end
+end
+
+let is_empty_list a
+    : List a -> Bool
+    = match
+        [] -> Bool:True end
+        _  -> Bool:False end
+    end
+end
+
+let indent
+    : Int -> String
+    = fn n -> Str:repeat n "  " end
+end
+
+let pretty_array
+    : Int -> List Json -> String
+    = fn n, xs ->
+        join3 "[\n" (Str:join ",\n" (map (fn x -> append (indent (add n 1)) (pretty_at (add n 1) x) end) xs)) (append "\n" (append (indent n) "]"))
+      end
+end
+
+let pretty_object
+    : Int -> List (String * Json) -> String
+    = fn n, ms ->
+        join3 "{\n" (Str:join ",\n" (map (fn kv -> append (indent (add n 1)) (append (quote (fst kv)) (append ": " (pretty_at (add n 1) (rst kv)))) end) ms)) (append "\n" (append (indent n) "}"))
+      end
+end
+
+let join3
+    : String -> String -> String -> String
+    = fn a, b, c -> append a (append b c) end
+end
+
+# JSON has no NaN or infinity; they are written as null
+let number_text
+    : Float -> String
+    = fn f ->
+        number_text_of (float_repr f)
+      end
+end
+
+let number_text_of
+    : String -> String
+    = fn r -> cond (or (eq r "nan") (or (eq r "inf") (eq r "-inf"))) "null" r end
+end
+
+let quote
+    : String -> String
+    = fn s -> append "\"" (append (flatten (map quote_char s)) "\"") end
+end
+
+let quote_char
+    : Char -> String
+    = fn c ->
+        cond (eq c '"') "\\\""
+        (cond (eq c '\\') "\\\\"
+        (cond (eq c '\n') "\\n"
+        (cond (eq c '\r') "\\r"
+        (cond (eq c '\t') "\\t"
+        (cond (eq (ord c) 8) "\\b"
+        (cond (eq (ord c) 12) "\\f"
+        (cond (ls (ord c) 32) (append "\\u" (Str:pad_left 4 '0' (hex_text (ord c))))
+        [c])))))))
+      end
+end
+
+let hex_text
+    : Int -> String
+    = fn n ->
+        cond (ls n 16)
+            [hex_char n]
+            (append (hex_text (div n 16)) [hex_char (mod n 16)])
+      end
+end
+
+let hex_char
+    : Int -> Char
+    = fn d -> cond (ls d 10) (chr (add 48 d)) (chr (add 87 d)) end
+end
+
+# ---- comparing and showing ----
+
+# Structural equality (member order matters).
+let equal
+    : Json -> Json -> Bool
+    = match
+        Json:JNull, Json:JNull       -> Bool:True end
+        Json:JBool a, Json:JBool b   -> eq a b end
+        Json:JNum a, Json:JNum b     -> eq a b end
+        Json:JStr a, Json:JStr b     -> eq a b end
+        Json:JArr a, Json:JArr b     -> equal_all a b end
+        Json:JObj a, Json:JObj b     -> equal_members a b end
+        _, _                         -> Bool:False end
+    end
+end
+
+let equal_all
+    : List Json -> List Json -> Bool
+    = match
+        [], []                                  -> Bool:True end
+        List:Cons (x * xs), List:Cons (y * ys)  -> and (Json:equal x y) (equal_all xs ys) end
+        _, _                                    -> Bool:False end
+    end
+end
+
+let equal_members
+    : List (String * Json) -> List (String * Json) -> Bool
+    = match
+        [], []                                  -> Bool:True end
+        List:Cons (x * xs), List:Cons (y * ys)  -> and (and (eq (fst x) (fst y)) (Json:equal (rst x) (rst y))) (equal_members xs ys) end
+        _, _                                    -> Bool:False end
+    end
+end
+
+instance Eqable Json is
+    let eq
+        : Json -> Json -> Bool
+        = Json:equal
+    end
+    let neq
+        : Json -> Json -> Bool
+        = fn a, b -> not (Json:equal a b) end
+    end
+end
+
+instance Showable Json is
+    let show
+        : Json -> String
+        = Json:stringify
+    end
+end

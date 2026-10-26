@@ -1,0 +1,309 @@
+module Ansi is
+
+# ANSI escape sequences: colors, text styles and cursor control. Everything here just builds
+# strings; print them with `print` / `println`.
+#
+#     import file std/ansi.iota
+#
+#     println (Ansi:red "error:")
+#     println (Ansi:bold (Ansi:fg Color:Cyan "hello"))
+#     print (append (Ansi:clear_screen) (Ansi:move_to 1 1))
+#
+# Styles wrap the text and switch everything off again afterwards, so they nest and combine
+# freely. Use `Ansi:strip` to remove the sequences (for measuring or for writing to a file).
+# Colors and styles are only useful on a terminal; check `Term:is_tty` first if the output
+# may be redirected.
+
+import file std/str.iota
+
+type Color = Black + Red + Green + Yellow + Blue + Magenta + Cyan + White
+end
+
+let color_index
+    : Color -> Int
+    = match
+        Color:Black   -> 0 end
+        Color:Red     -> 1 end
+        Color:Green   -> 2 end
+        Color:Yellow  -> 3 end
+        Color:Blue    -> 4 end
+        Color:Magenta -> 5 end
+        Color:Cyan    -> 6 end
+        Color:White   -> 7 end
+    end
+end
+
+# "\e[" ++ parameters ++ final byte: the general control sequence
+let csi
+    : String -> String
+    = fn params -> append "\e[" params end
+end
+
+# Wraps text in a set of SGR codes ("1" = bold, "31" = red, ...) and then resets.
+let sgr
+    : List Int -> String -> String
+    = fn codes, text ->
+        join3 (csi (append (Str:join ";" (map show codes)) "m")) text (csi "0m")
+      end
+end
+
+let join3
+    : String -> String -> String -> String
+    = fn a, b, c -> append a (append b c) end
+end
+
+# ---- colors ----
+
+let fg
+    : Color -> String -> String
+    = fn c -> sgr [add 30 (color_index c)] end
+end
+
+let bg
+    : Color -> String -> String
+    = fn c -> sgr [add 40 (color_index c)] end
+end
+
+# the brighter variants
+let fg_bright
+    : Color -> String -> String
+    = fn c -> sgr [add 90 (color_index c)] end
+end
+
+let bg_bright
+    : Color -> String -> String
+    = fn c -> sgr [add 100 (color_index c)] end
+end
+
+# 24-bit colors: components 0-255
+let rgb
+    : Int -> Int -> Int -> String -> String
+    = fn r, g, b -> sgr [38, 2, r, g, b] end
+end
+
+let bg_rgb
+    : Int -> Int -> Int -> String -> String
+    = fn r, g, b -> sgr [48, 2, r, g, b] end
+end
+
+# the 256-color palette
+let color256
+    : Int -> String -> String
+    = fn n -> sgr [38, 5, n] end
+end
+
+let bg_color256
+    : Int -> String -> String
+    = fn n -> sgr [48, 5, n] end
+end
+
+let black
+    : String -> String
+    = fg Color:Black
+end
+
+let red
+    : String -> String
+    = fg Color:Red
+end
+
+let green
+    : String -> String
+    = fg Color:Green
+end
+
+let yellow
+    : String -> String
+    = fg Color:Yellow
+end
+
+let blue
+    : String -> String
+    = fg Color:Blue
+end
+
+let magenta
+    : String -> String
+    = fg Color:Magenta
+end
+
+let cyan
+    : String -> String
+    = fg Color:Cyan
+end
+
+let white
+    : String -> String
+    = fg Color:White
+end
+
+let gray
+    : String -> String
+    = fg_bright Color:Black
+end
+
+# ---- text styles ----
+
+let bold
+    : String -> String
+    = sgr [1]
+end
+
+let dim
+    : String -> String
+    = sgr [2]
+end
+
+let italic
+    : String -> String
+    = sgr [3]
+end
+
+let underline
+    : String -> String
+    = sgr [4]
+end
+
+let blink
+    : String -> String
+    = sgr [5]
+end
+
+# swaps foreground and background
+let inverse
+    : String -> String
+    = sgr [7]
+end
+
+let strikethrough
+    : String -> String
+    = sgr [9]
+end
+
+# ---- cursor and screen (1-based rows and columns) ----
+
+let move_to
+    : Int -> Int -> String
+    = fn row, col -> csi (append (show row) (append ";" (append (show col) "H"))) end
+end
+
+let up
+    : Int -> String
+    = fn n -> csi (append (show n) "A") end
+end
+
+let down
+    : Int -> String
+    = fn n -> csi (append (show n) "B") end
+end
+
+let forward
+    : Int -> String
+    = fn n -> csi (append (show n) "C") end
+end
+
+let back
+    : Int -> String
+    = fn n -> csi (append (show n) "D") end
+end
+
+# moves to a column of the current row
+let column
+    : Int -> String
+    = fn n -> csi (append (show n) "G") end
+end
+
+let home
+    : String
+    = csi "H"
+end
+
+let save_cursor
+    : String
+    = "\e7"
+end
+
+let restore_cursor
+    : String
+    = "\e8"
+end
+
+let hide_cursor
+    : String
+    = csi "?25l"
+end
+
+let show_cursor
+    : String
+    = csi "?25h"
+end
+
+let clear_screen
+    : String
+    = csi "2J"
+end
+
+# erases the whole current line
+let clear_line
+    : String
+    = csi "2K"
+end
+
+let clear_to_line_end
+    : String
+    = csi "K"
+end
+
+let clear_to_screen_end
+    : String
+    = csi "J"
+end
+
+# the alternate screen is what full-screen programs (vim, less) draw on, so the shell's
+# scrollback comes back intact when they leave
+let alt_screen_on
+    : String
+    = csi "?1049h"
+end
+
+let alt_screen_off
+    : String
+    = csi "?1049l"
+end
+
+let reset
+    : String
+    = csi "0m"
+end
+
+let bell
+    : String
+    = "\a"
+end
+
+# ---- removing and measuring ----
+
+# Removes control sequences (CSI: colors, cursor movement, ...).
+let strip
+    : String -> String
+    = match
+        []                                        -> [] end
+        List:Cons ('\e' * List:Cons ('[' * rest)) -> strip (drop_past_final rest) end
+        List:Cons (c * cs)                        -> List:Cons (c * strip cs) end
+    end
+end
+
+# skips the parameters and the final byte (0x40-0x7E) of a control sequence
+let drop_past_final
+    : String -> String
+    = match
+        []                 -> [] end
+        List:Cons (c * cs) -> cond (and (gre (ord c) 64) (lse (ord c) 126)) cs (drop_past_final cs) end
+    end
+end
+
+# The number of characters shown, ignoring control sequences.
+let visible_length
+    : String -> Int
+    = fn s -> len (strip s) end
+end

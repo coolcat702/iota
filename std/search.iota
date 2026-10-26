@@ -1,0 +1,162 @@
+module Search is
+
+# Searching and picking elements out of lists.
+#
+#     import file std/search.iota
+#
+# Predicates come first and the list last, so they pipe: `xs > Search:find even`.
+
+let find a
+    : (a -> Bool) -> List a -> Maybe a
+    = match
+        _, []                 -> Maybe:Nil end
+        p, List:Cons (x * xs) -> cond (p x) (Maybe:Val x) (find p xs) end
+    end
+end
+
+# Position of the first element satisfying the predicate.
+let find_index a
+    : (a -> Bool) -> List a -> Maybe Int
+    = fn p, xs -> find_index_from p 0 xs end
+end
+
+let find_index_from a
+    : (a -> Bool) -> Int -> List a -> Maybe Int
+    = match
+        _, _, []                 -> Maybe:Nil end
+        p, i, List:Cons (x * xs) -> cond (p x) (Maybe:Val i) (find_index_from p (add i 1) xs) end
+    end
+end
+
+# Every position whose element satisfies the predicate.
+let find_indices a
+    : (a -> Bool) -> List a -> List Int
+    = fn p, xs -> find_indices_from p 0 xs end
+end
+
+let find_indices_from a
+    : (a -> Bool) -> Int -> List a -> List Int
+    = match
+        _, _, []                 -> [] end
+        p, i, List:Cons (x * xs) ->
+            cond (p x)
+                (List:Cons (i * find_indices_from p (add i 1) xs))
+                (find_indices_from p (add i 1) xs)
+        end
+    end
+end
+
+let any a
+    : (a -> Bool) -> List a -> Bool
+    = match
+        _, []                 -> Bool:False end
+        p, List:Cons (x * xs) -> or (p x) (any p xs) end
+    end
+end
+
+let all a
+    : (a -> Bool) -> List a -> Bool
+    = match
+        _, []                 -> Bool:True end
+        p, List:Cons (x * xs) -> and (p x) (all p xs) end
+    end
+end
+
+let count a
+    : (a -> Bool) -> List a -> Int
+    = fn p, xs -> len (filter p xs) end
+end
+
+# `contains x xs`
+let contains (a : Eqable)
+    : a -> List a -> Bool
+    = fn x -> any (eq x) end
+end
+
+let last a
+    : List a -> Maybe a
+    = match
+        []                  -> Maybe:Nil end
+        List:Cons (x * [])  -> Maybe:Val x end
+        List:Cons (_ * xs)  -> last xs end
+    end
+end
+
+# Everything but the last element.
+let init a
+    : List a -> List a
+    = match
+        []                  -> [] end
+        List:Cons (_ * [])  -> [] end
+        List:Cons (x * xs)  -> List:Cons (x * init xs) end
+    end
+end
+
+let drop_while a
+    : (a -> Bool) -> List a -> List a
+    = match
+        _, []                 -> [] end
+        p, List:Cons (x * xs) -> cond (p x) (drop_while p xs) (List:Cons (x * xs)) end
+    end
+end
+
+# `partition p xs` is (the elements satisfying p, the rest), each in order.
+let partition a
+    : (a -> Bool) -> List a -> (List a * List a)
+    = fn p, xs -> (filter p xs * filter (fn x -> not (p x) end) xs) end
+end
+
+# The smallest / largest element, `Nil` for an empty list.
+let minimum (a : Orderable)
+    : List a -> Maybe a
+    = fn xs -> pick (fn x, y -> ls x y end) xs end
+end
+
+let maximum (a : Orderable)
+    : List a -> Maybe a
+    = fn xs -> pick (fn x, y -> gr x y end) xs end
+end
+
+# the element for which `key` is smallest (the first one on ties)
+let minimum_on a (k : Orderable)
+    : (a -> k) -> List a -> Maybe a
+    = fn key -> pick (fn x, y -> ls (key x) (key y) end) end
+end
+
+let maximum_on a (k : Orderable)
+    : (a -> k) -> List a -> Maybe a
+    = fn key -> pick (fn x, y -> gr (key x) (key y) end) end
+end
+
+# keeps the winner of `better x y` ("x beats y") over the whole list
+let pick a
+    : (a -> a -> Bool) -> List a -> Maybe a
+    = match
+        _, []                 -> Maybe:Nil end
+        b, List:Cons (x * xs) -> Maybe:Val (foldl (fn best, y -> cond (b y best) y best end) x xs) end
+    end
+end
+
+# Removes every duplicate, keeping first occurrences (O(n^2); use Sort:sort_unique or a
+# HashSet for big lists).
+let unique (a : Eqable)
+    : List a -> List a
+    = match
+        []                 -> [] end
+        List:Cons (x * xs) -> List:Cons (x * unique (filter (neq x) xs)) end
+    end
+end
+
+# Binary search over an index range: the smallest i in [lo, hi) with `p i` true, assuming
+# `p` is false and then true as i grows; `hi` if it is never true. Use it to search anything
+# you can index in O(1) (a computed function, a numeric answer, ...).
+let partition_point
+    : (Int -> Bool) -> Int -> Int -> Int
+    = fn p, lo, hi ->
+        cond (gre lo hi)
+            hi
+            (cond (p (add lo (div (sub hi lo) 2)))
+                (partition_point p lo (add lo (div (sub hi lo) 2)))
+                (partition_point p (add (add lo (div (sub hi lo) 2)) 1) hi))
+      end
+end

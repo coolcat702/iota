@@ -1,0 +1,194 @@
+module Rng is
+
+# Pseudo-random numbers. A generator is an immutable value: every function that draws a
+# number also returns the next generator, so a program with the same seed always makes the
+# same choices (handy for tests and simulations).
+#
+#     import file std/rng.iota
+#
+#     let rolls : List Int = Rng:take_ints 3 1 7 (Rng:seed 42) end
+#
+# For a different sequence on every run, start from the operating system's entropy:
+#
+#     bind (fn g -> ... end) Rng:from_os
+#
+# The algorithm is mulberry32: 32 bits of state, passes common statistical tests, and is
+# NOT suitable for cryptography.
+
+import file std/sort.iota
+
+let prim_seed
+    : IO Int
+    = undefined
+end
+
+# the state of a generator
+type Gen = G Int + GNever
+end
+
+let seed
+    : Int -> Gen
+    = fn n -> Gen:G n end
+end
+
+# A generator seeded from the operating system.
+let from_os
+    : IO Gen
+    = fmap seed prim_seed
+end
+
+let state
+    : Gen -> Int
+    = match
+        Gen:G s    -> s end
+        Gen:GNever -> 0 end
+    end
+end
+
+# The next raw 32-bit value (any Int, positive or negative) and the next generator.
+let next
+    : Gen -> (Int * Gen)
+    = fn g -> next_from (add (state g) 1831565813) end
+end
+
+let next_from
+    : Int -> (Int * Gen)
+    = fn s -> (mulberry s * Gen:G s) end
+end
+
+let mulberry
+    : Int -> Int
+    = fn s ->
+        mb3 (bit_xor s (shift_right s 15)) (bit_or s 1) s
+      end
+end
+
+let mb3
+    : Int -> Int -> Int -> Int
+    = fn x, y, s -> mb4 (mul x y) s end
+end
+
+let mb4
+    : Int -> Int -> Int
+    = fn t, s ->
+        mb5 (bit_xor t (add t (mul (bit_xor t (shift_right t 7)) (bit_or t 61))))
+      end
+end
+
+let mb5
+    : Int -> Int
+    = fn t -> bit_xor t (shift_right t 14) end
+end
+
+# A whole number in [lo, hi): `int_range 1 7 g` is a die roll. (hi must be above lo.)
+let int_range
+    : Int -> Int -> Gen -> (Int * Gen)
+    = fn lo, hi, g -> scale lo (sub hi lo) (next g) end
+end
+
+let scale
+    : Int -> Int -> (Int * Gen) -> (Int * Gen)
+    = fn lo, span, r -> (add lo (mod (shift_right (fst r) 1) span) * rst r) end
+end
+
+# A Float in [0, 1).
+let float
+    : Gen -> (Float * Gen)
+    = fn g -> to_unit (next g) end
+end
+
+let to_unit
+    : (Int * Gen) -> (Float * Gen)
+    = fn r -> (div (int_to_float (shift_right (fst r) 8)) 16777216.0 * rst r) end
+end
+
+let bool
+    : Gen -> (Bool * Gen)
+    = fn g -> bit_of (next g) end
+end
+
+let bit_of
+    : (Int * Gen) -> (Bool * Gen)
+    = fn r -> (eq (bit_and (shift_right (fst r) 16) 1) 1 * rst r) end
+end
+
+# Two independent generators from one.
+let split
+    : Gen -> (Gen * Gen)
+    = fn g -> split_from (next g) end
+end
+
+let split_from
+    : (Int * Gen) -> (Gen * Gen)
+    = fn r -> (Gen:G (fst r) * rst r) end
+end
+
+# `choose xs g` picks one element; `Nil` for an empty list.
+let choose a
+    : List a -> Gen -> (Maybe a * Gen)
+    = fn xs, g ->
+        cond (eq (len xs) 0)
+            (Maybe:Nil * g)
+            (pick_at xs (int_range 0 (len xs) g))
+      end
+end
+
+let pick_at a
+    : List a -> (Int * Gen) -> (Maybe a * Gen)
+    = fn xs, r -> (first (drop (fst r) xs) * rst r) end
+end
+
+let first a
+    : List a -> Maybe a
+    = match
+        []                 -> Maybe:Nil end
+        List:Cons (x * _)  -> Maybe:Val x end
+    end
+end
+
+# A uniformly shuffled copy of the list.
+let shuffle a
+    : List a -> Gen -> (List a * Gen)
+    = fn xs, g -> shuffled (zip_keys xs g) end
+end
+
+# pairs every element with a random key and returns the final generator too
+let zip_keys a
+    : List a -> Gen -> (List (Int * a) * Gen)
+    = match
+        [], g                 -> ([] * g) end
+        List:Cons (x * xs), g -> cons_key x (next g) xs end
+    end
+end
+
+let cons_key a
+    : a -> (Int * Gen) -> List a -> (List (Int * a) * Gen)
+    = fn x, r, xs -> consed (fst r) x (zip_keys xs (rst r)) end
+end
+
+let consed a
+    : Int -> a -> (List (Int * a) * Gen) -> (List (Int * a) * Gen)
+    = fn k, x, rest -> (List:Cons ((k * x) * fst rest) * rst rest) end
+end
+
+let shuffled a
+    : (List (Int * a) * Gen) -> (List a * Gen)
+    = fn r -> (map rst (Sort:sort_on fst (fst r)) * rst r) end
+end
+
+# An endless lazy list of Ints in [lo, hi).
+let ints
+    : Int -> Int -> Gen -> List Int
+    = fn lo, hi, g -> ints_step lo hi (int_range lo hi g) end
+end
+
+let ints_step
+    : Int -> Int -> (Int * Gen) -> List Int
+    = fn lo, hi, r -> List:Cons (fst r * ints lo hi (rst r)) end
+end
+
+# `take_ints n lo hi g`: n whole numbers in [lo, hi).
+let take_ints
+    : Int -> Int -> Int -> Gen -> List Int
+    = fn n, lo, hi, g -> take n (ints lo hi g) end
+end

@@ -1,0 +1,316 @@
+module Str is
+
+# String utilities. A `String` is a `List Char`, so every list function works on strings too;
+# this module adds the text-specific ones. Case conversion and the character classes are
+# ASCII only. Import it with:
+#
+#     import file std/str.iota
+#
+# and call things as `Str:split`, or `import Str:split as split`.
+#
+# Functions take the "thing being worked on" last, so they pipe: `s > Str:trim > Str:to_upper`.
+
+# ---- characters ----
+
+let is_digit
+    : Char -> Bool
+    = fn c -> and (gre c '0') (lse c '9') end
+end
+
+let is_upper
+    : Char -> Bool
+    = fn c -> and (gre c 'A') (lse c 'Z') end
+end
+
+let is_lower
+    : Char -> Bool
+    = fn c -> and (gre c 'a') (lse c 'z') end
+end
+
+let is_alpha
+    : Char -> Bool
+    = fn c -> or (is_upper c) (is_lower c) end
+end
+
+let is_alnum
+    : Char -> Bool
+    = fn c -> or (is_alpha c) (is_digit c) end
+end
+
+let is_space
+    : Char -> Bool
+    = fn c -> or (or (eq c ' ') (eq c '\t')) (or (eq c '\n') (eq c '\r')) end
+end
+
+let char_to_upper
+    : Char -> Char
+    = fn c -> cond (is_lower c) (chr (sub (ord c) 32)) c end
+end
+
+let char_to_lower
+    : Char -> Char
+    = fn c -> cond (is_upper c) (chr (add (ord c) 32)) c end
+end
+
+# ---- basics ----
+
+let is_empty
+    : String -> Bool
+    = is_default
+end
+
+# True if the string is empty or only white space.
+let is_blank
+    : String -> Bool
+    = fn s -> is_empty (drop_while is_space s) end
+end
+
+let from_char
+    : Char -> String
+    = fn c -> [c] end
+end
+
+
+# `join ", " ["a", "b"]` is "a, b"
+let join
+    : String -> List String -> String
+    = match
+        _, []                   -> [] end
+        _, List:Cons (x * [])   -> x end
+        sep, List:Cons (x * xs) -> append x (append sep (join sep xs)) end
+    end
+end
+
+# `substring start count s`
+let substring
+    : Int -> Int -> String -> String
+    = fn start, n, s -> take n (drop start s) end
+end
+
+let drop_while
+    : (Char -> Bool) -> String -> String
+    = match
+        _, [] -> [] end
+        p, List:Cons (c * cs) -> cond (p c) (drop_while p cs) (List:Cons (c * cs)) end
+    end
+end
+
+# ---- case ----
+
+let to_upper
+    : String -> String
+    = map char_to_upper
+end
+
+let to_lower
+    : String -> String
+    = map char_to_lower
+end
+
+# first letter upper case, the rest unchanged
+let capitalize
+    : String -> String
+    = match
+        []                 -> [] end
+        List:Cons (c * cs) -> List:Cons (char_to_upper c * cs) end
+    end
+end
+
+# ---- searching ----
+
+# `starts_with prefix s`
+let starts_with
+    : String -> String -> Bool
+    = match
+        [], _ -> Bool:True end
+        _, [] -> Bool:False end
+        List:Cons (p * ps), List:Cons (c * cs) -> and (eq p c) (starts_with ps cs) end
+    end
+end
+
+# `ends_with suffix s`
+let ends_with
+    : String -> String -> Bool
+    = fn suffix, s -> starts_with (reverse suffix) (reverse s) end
+end
+
+# the position of the first occurrence of `needle` in the string
+let find
+    : String -> String -> Maybe Int
+    = fn needle, s -> find_from needle s 0 end
+end
+
+let find_from
+    : String -> String -> Int -> Maybe Int
+    = match
+        needle, s, i ->
+            cond (starts_with needle s)
+                (Maybe:Val i)
+                (find_tail needle s i)
+        end
+    end
+end
+
+let find_tail
+    : String -> String -> Int -> Maybe Int
+    = match
+        _, [], _                      -> Maybe:Nil end
+        needle, List:Cons (_ * cs), i -> find_from needle cs (add i 1) end
+    end
+end
+
+let contains
+    : String -> String -> Bool
+    = fn needle, s -> neq (find needle s) Maybe:Nil end
+end
+
+let contains_char
+    : Char -> String -> Bool
+    = fn c, s -> neq (index_of s c) Maybe:Nil end
+end
+
+# `strip_prefix "ab" "abc"` is `Val "c"`; `Nil` if the prefix does not match
+let strip_prefix
+    : String -> String -> Maybe String
+    = fn p, s -> cond (starts_with p s) (Maybe:Val (drop (len p) s)) Maybe:Nil end
+end
+
+let strip_suffix
+    : String -> String -> Maybe String
+    = fn p, s -> cond (ends_with p s) (Maybe:Val (take (sub (len s) (len p)) s)) Maybe:Nil end
+end
+
+# ---- trimming ----
+
+let trim_start
+    : String -> String
+    = drop_while is_space
+end
+
+let trim_end
+    : String -> String
+    = fn s -> reverse (drop_while is_space (reverse s)) end
+end
+
+let trim
+    : String -> String
+    = fn s -> trim_end (trim_start s) end
+end
+
+# ---- splitting ----
+
+# Splits at every character satisfying the predicate: "a,b,,c" gives ["a", "b", "", "c"].
+let split_by
+    : (Char -> Bool) -> String -> List String
+    = fn p, s -> split_by_step p (take_while (fn c -> not (p c) end) s) (drop_until p s) end
+end
+
+let split_by_step
+    : (Char -> Bool) -> String -> String -> List String
+    = match
+        _, before, []                   -> [before] end
+        p, before, List:Cons (_ * rest) -> List:Cons (before * split_by p rest) end
+    end
+end
+
+let drop_until
+    : (Char -> Bool) -> String -> String
+    = fn p -> drop_while (fn c -> not (p c) end) end
+end
+
+let split
+    : Char -> String -> List String
+    = fn sep -> split_by (eq sep) end
+end
+
+# Splits at every occurrence of the separator string. An empty separator splits into
+# single characters.
+let split_str
+    : String -> String -> List String
+    = fn sep, s ->
+        cond (is_empty sep) (map from_char s) (split_str_go sep (len sep) [] s)
+      end
+end
+
+let split_str_go
+    : String -> Int -> String -> String -> List String
+    = match
+        _, _, acc, [] -> [reverse acc] end
+        sep, n, acc, List:Cons (c * cs) ->
+            cond (starts_with sep (List:Cons (c * cs)))
+                (List:Cons (reverse acc * split_str_go sep n [] (drop n (List:Cons (c * cs)))))
+                (split_str_go sep n (List:Cons (c * acc)) cs)
+        end
+    end
+end
+
+# Lines, with "\n" or "\r\n" endings; a final line break does not add an empty line.
+let lines
+    : String -> List String
+    = fn s -> map strip_cr (drop_last_empty (split '\n' s)) end
+end
+
+let strip_cr
+    : String -> String
+    = fn s -> cond (ends_with "\r" s) (take (sub (len s) 1) s) s end
+end
+
+let drop_last_empty
+    : List String -> List String
+    = match
+        []                  -> [] end
+        List:Cons ([] * []) -> [] end
+        List:Cons (x * xs)  -> List:Cons (x * drop_last_empty xs) end
+    end
+end
+
+let unlines
+    : List String -> String
+    = fn ls -> flatten (map (fn l -> append l "\n" end) ls) end
+end
+
+# Splits on runs of white space.
+let words
+    : String -> List String
+    = fn s -> filter (fn w -> not (is_empty w) end) (split_by is_space s) end
+end
+
+let unwords
+    : List String -> String
+    = join " "
+end
+
+# ---- replacing ----
+
+# `replace "a" "b" s` swaps every "a" for "b". An empty pattern leaves the string alone.
+let replace
+    : String -> String -> String -> String
+    = fn from, to, s ->
+        cond (is_empty from) s (join to (split_str from s))
+      end
+end
+
+# ---- padding ----
+
+# `pad_left 5 '0' "42"` is "00042"; longer strings are unchanged.
+let pad_left
+    : Int -> Char -> String -> String
+    = fn width, c, s -> append (repeat (sub width (len s)) [c]) s end
+end
+
+let pad_right
+    : Int -> Char -> String -> String
+    = fn width, c, s -> append s (repeat (sub width (len s)) [c]) end
+end
+
+# ---- numbers ----
+
+let parse_int
+    : String -> Maybe Int
+    = parse
+end
+
+let parse_float
+    : String -> Maybe Float
+    = parse
+end

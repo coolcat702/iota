@@ -1,0 +1,92 @@
+module Sort is
+
+# Sorting. All sorts are stable merge sorts: O(n log n), and equal elements keep their order.
+#
+#     import file std/sort.iota
+#
+#     Sort:sort [3, 1, 2]                       # [1, 2, 3]
+#     Sort:sort_by gre [3, 1, 2]                # [3, 2, 1]   (the comparison is "may come first")
+#     Sort:sort_on Str:len ["ccc", "a", "bb"]   # ["a", "bb", "ccc"]
+
+# Ascending order.
+let sort (a : Orderable)
+    : List a -> List a
+    = sort_by lse
+end
+
+let sort_desc (a : Orderable)
+    : List a -> List a
+    = sort_by gre
+end
+
+# `sort_by le xs`: `le x y` says whether x may come before y. It must be a total preorder
+# (like `lse`); for stability use "less than or equal", not "less than".
+let sort_by a
+    : (a -> a -> Bool) -> List a -> List a
+    = fn le, xs -> sort_n le (len xs) xs end
+end
+
+# Sorts by a key computed from each element.
+let sort_on a (k : Orderable)
+    : (a -> k) -> List a -> List a
+    = fn key -> sort_by (fn x, y -> lse (key x) (key y) end) end
+end
+
+let sort_n a
+    : (a -> a -> Bool) -> Int -> List a -> List a
+    = fn le, n, xs ->
+        cond (lse n 1)
+            (take n xs)
+            (merge_by le
+                (sort_n le (div n 2) (take (div n 2) xs))
+                (sort_n le (sub n (div n 2)) (drop (div n 2) xs)))
+      end
+end
+
+# Merges two lists that are already sorted by `le`.
+let merge_by a
+    : (a -> a -> Bool) -> List a -> List a -> List a
+    = match
+        _, [], ys -> ys end
+        _, xs, [] -> xs end
+        le, List:Cons (x * xs), List:Cons (y * ys) ->
+            cond (le x y)
+                (List:Cons (x * merge_by le xs (List:Cons (y * ys))))
+                (List:Cons (y * merge_by le (List:Cons (x * xs)) ys))
+        end
+    end
+end
+
+let merge (a : Orderable)
+    : List a -> List a -> List a
+    = merge_by lse
+end
+
+let is_sorted (a : Orderable)
+    : List a -> Bool
+    = match
+        []                              -> Bool:True end
+        List:Cons (_ * [])              -> Bool:True end
+        List:Cons (x * List:Cons (y * ys)) -> and (lse x y) (is_sorted (List:Cons (y * ys))) end
+    end
+end
+
+# Removes adjacent duplicates (so it removes all duplicates of a sorted list).
+let dedup (a : Eqable)
+    : List a -> List a
+    = match
+        []                                 -> [] end
+        List:Cons (x * [])                 -> [x] end
+        List:Cons (x * List:Cons (y * ys)) ->
+            cond (eq x y)
+                (dedup (List:Cons (y * ys)))
+                (List:Cons (x * dedup (List:Cons (y * ys))))
+        end
+    end
+end
+
+# Sorted, without duplicates.
+let sort_unique (a : Orderable, Eqable)
+    : List a -> List a
+    = fn xs -> dedup (sort xs) end
+end
