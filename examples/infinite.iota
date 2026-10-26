@@ -7,5 +7,5 @@ end
 
 let main
     : IO Unit
-    = println (show (sum (take 10 (from 1))))
+    = println < show < sum < take 10 < from 1
 end

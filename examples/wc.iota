@@ -1,0 +1,40 @@
+module Main is
+
+# A small `wc`: counts lines, words and characters of the files named on the command line, or
+# of standard input when there are none. Exits with 1 if any file could not be read.
+#
+#     iota examples/wc.iota --run -- README.md src/lang.rs
+#     echo "some text" | iota examples/wc.iota --run
+
+import file std/str.iota
+
+let counts
+    : String -> String
+    = fn text -> Str:join " " (map (fn n -> Str:pad_left 7 ' ' (show n) end) [len (Str:lines text), len (Str:words text), len text]) end
+end
+
+# prints one result line; the Int is the number of failures (0 or 1)
+let report
+    : String -> Either IOError String -> IO Int
+    = fn name -> match
+        Either:Right text -> println (concat (counts text) (concat " " name)) > then (return 0) end
+        Either:Left e     -> eprintln (concat "wc: " (concat name (concat ": " (show e)))) > then (return 1) end
+      end
+    end
+end
+
+let add_failures
+    : List String -> Int -> IO Int
+    = match
+        [], n                   -> return n end
+        List:Cons (f * fs), n   -> bind (fn k -> add_failures fs (add n k) end) (bind (report f) (read_file f)) end
+    end
+end
+
+let main
+    : List String -> IO Int
+    = fn argv -> cond (eq (len argv) 0)
+        (bind (fn text -> println (counts text) > then (return 0) end) read_stdin)
+        (bind (fn failed -> return (cond (gr failed 0) 1 0) end) (add_failures argv 0))
+      end
+end

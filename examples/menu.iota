@@ -1,0 +1,88 @@
+module Main is
+
+# A tiny interactive menu: arrow keys (or j/k) move, Enter picks, q quits. Shows raw-mode
+# keypresses, colors, cursor control, and the terminal size.
+#
+#     iota examples/menu.iota --run
+
+import file std/ansi.iota
+import file std/term.iota
+
+let items
+    : List String
+    = ["Compile", "Test", "Benchmark", "Deploy"]
+end
+
+let line
+    : Int -> Int -> String -> String
+    = fn selected, i, text ->
+        cond (eq selected i)
+            (append (Ansi:bold (Ansi:fg Color:Cyan "> ")) (Ansi:bold text))
+            (append "  " text)
+      end
+end
+
+let draw
+    : Int -> IO Unit
+    = fn selected ->
+        print (append Ansi:home Ansi:clear_screen) > then
+        (println (Ansi:underline "Pick a task")) > then
+        (print (unlines_of (map (fn i -> line selected i (nth_item i) end) (range 0 (len items))))) > then
+        (bind (fn sz -> println (Ansi:dim (concat "terminal " (concat (show (fst sz)) (concat "x" (show (rst sz)))))) end) Term:size)
+      end
+end
+
+let nth_item
+    : Int -> String
+    = fn i -> pick items i end
+end
+
+let pick
+    : List String -> Int -> String
+    = match
+        [], _                 -> [] end
+        List:Cons (x * _), 0  -> x end
+        List:Cons (_ * xs), n -> pick xs (sub n 1) end
+    end
+end
+
+let unlines_of
+    : List String -> String
+    = fn ls -> foldr (fn l, acc -> append l (append "\n" acc) end) [] ls end
+end
+
+let clamp
+    : Int -> Int
+    = fn n -> cond (ls n 0) 0 (cond (gre n (len items)) (sub (len items) 1) n) end
+end
+
+let loop
+    : Int -> IO (Maybe Int)
+    = fn selected ->
+        draw selected > then
+        (bind (fn k -> step selected k end) Term:read_key)
+      end
+end
+
+let step
+    : Int -> Key -> IO (Maybe Int)
+    = fn selected, k ->
+        cond (or (eq k Key:ArrowUp) (eq k (Key:Ch 'k'))) (loop (clamp (sub selected 1)))
+        (cond (or (eq k Key:ArrowDown) (eq k (Key:Ch 'j'))) (loop (clamp (add selected 1)))
+        (cond (eq k Key:Enter) (return (Maybe:Val selected))
+        (cond (or (eq k (Key:Ch 'q')) (or (eq k (Key:Ctrl 'c')) (eq k Key:Eof))) (return Maybe:Nil)
+        (loop selected))))
+      end
+end
+
+let main
+    : IO Int
+    = bind (fn choice ->
+        print (append Ansi:show_cursor Ansi:clear_screen) > then
+        (print Ansi:home) > then
+        (match
+            Maybe:Val i -> println (concat "You picked: " (nth_item i)) > then (return 0) end
+            Maybe:Nil   -> println "Cancelled." > then (return 1) end
+         end choice)
+      end) (print Ansi:hide_cursor > then (Term:with_raw_mode (loop 0)))
+end

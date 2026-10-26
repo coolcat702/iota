@@ -7,5 +7,5 @@ end
 
 let main
     : IO Unit
-    = println (show (foldl add 0 (take_while (fn n -> lse n 10 end) (nats 0))))
+    = println < show < foldl add 0 (nats 0 > take_while fn n -> lse n 10 end)
 end

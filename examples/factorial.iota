@@ -2,10 +2,10 @@ module Main is
 
 let factorial
     : Int -> Int
-    = fn n -> cond (lse n 1) 1 (mul n (factorial (sub n 1))) end
+    = fn n -> cond (lse n 1) 1 (mul n < factorial < pred n) end
 end
 
 let main
     : IO Unit
-    = println (show (factorial 10))
+    = println < show < factorial 10
 end
