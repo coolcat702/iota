@@ -1,0 +1,964 @@
+module Main is
+
+# a turn-based dungeon puzzle game for the terminal.
+#
+# Moving    IJKL or arrow keys
+# Waiting   space or .
+# Dashing   Shift+IJKL, or f then a direction (two tiles in one turn, then one turn to recover)
+# Undo      u or z
+# Restart   r
+# Menu      q, x, or Esc
+
+import file clockwork/engine.iota
+import file clockwork/levels.iota
+import file std/ansi.iota
+import file std/term.iota
+import file std/time.iota
+import file std/str.iota
+import file std/search.iota
+
+type GAct = GMove Int + GDash Int + GWait + GUndo + GRestart + GMenu + GDashMode + GRedraw + GNone
+end
+
+# won is (state, undos)
+type Outcome = LevelWon (CwState * Int) + LevelQuit
+end
+
+# ======================================================================================
+# Colors
+# ======================================================================================
+
+let rgb_fg
+    : Int -> Int -> Int -> List Int
+    = fn r, g, b -> [38, 2, r, g, b] end
+end
+
+let rgb_bg
+    : Int -> Int -> Int -> List Int
+    = fn r, g, b -> [48, 2, r, g, b] end
+end
+
+# plates and the gates they toggle come in four colors
+let group_color
+    : Int -> List Int
+    = match
+        0 -> [255, 200, 60] end
+        1 -> [90, 200, 255] end
+        2 -> [120, 230, 120] end
+        _ -> [230, 120, 230] end
+    end
+end
+
+let color_fg
+    : List Int -> List Int
+    = append [38, 2]
+end
+
+let color_bg
+    : List Int -> List Int
+    = append [48, 2]
+end
+
+let dim_color
+    : List Int -> List Int
+    = map (mul 2 > comp < flip div 5)
+end
+
+let floor_bg
+    : Pt -> List Int
+    = fn p ->
+        cond (eq 0 < mod (fork add fst rst p) 2)
+            (rgb_bg 26 28 40)
+            (rgb_bg 31 33 48)
+    end
+end
+
+let enemy_bg
+    : List Int
+    = rgb_bg 66 24 36
+end
+
+# ======================================================================================
+# One tile (two chars wide)
+# ======================================================================================
+
+let player_cell
+    : CwState -> String
+    = fn st ->
+        cond (Engine:is_playing st)
+            (Ansi:sgr (flatten [rgb_bg 60 200 255, [1], rgb_fg 8 18 40]) "@ ")
+      < cond (Engine:is_won st)
+            (Ansi:sgr (flatten [rgb_bg 120 255 170, [1], rgb_fg 8 40 20]) "@ ")
+            (Ansi:sgr (flatten [rgb_bg 210 40 55, [1], rgb_fg 255 255 255]) "XX")
+    end
+end
+
+let bullet_cell
+    : Pt -> String
+    = fn p -> Ansi:sgr (flatten [floor_bg p, [1], rgb_fg 255 150 40]) "**" end
+end
+
+let target_cell
+    : String
+    = Ansi:sgr (flatten [rgb_bg 110 28 40, [1], rgb_fg 255 130 130]) "!!"
+end
+
+# an enemy: its letter and one char with its state
+let enemy_cell
+    : CwLevel -> List Pt -> CwEnemy -> String
+    = fn lv, alerted -> match
+        CwEnemy:EFollower p ->
+            append (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 255 105 105]) "F")
+              < cond (Search:contains p alerted)
+                    (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 255 230 90]) "!")
+                    (Ansi:sgr enemy_bg " ")
+        end
+        CwEnemy:EPatroller (pi * (si * d)) ->
+            append (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 235 140 255]) "P")
+                (Ansi:sgr (append enemy_bg < rgb_fg 235 140 255) (patrol_arrow lv pi si d))
+        end
+        CwEnemy:ETurret (p * (f * (per * t))) ->
+            append (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 255 215 80]) (turret_glyph f))
+                (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 255 215 80]) (cond (ls t 10) (show t) "+"))
+        end
+        CwEnemy:ERunner _ ->
+            append (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 255 175 70]) "R") (Ansi:sgr enemy_bg " ")
+        end
+        CwEnemy:ELeaper (p * (cd * tg)) ->
+            append (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 125 245 145]) "L")
+                (Ansi:sgr (flatten [enemy_bg, [1], rgb_fg 255 230 90]) (cond (gr cd 0) (show cd) " "))
+        end
+    end end
+end
+
+let turret_glyph
+    : Int -> String
+    = match
+        0 -> "▲" end
+        1 -> "▶" end
+        2 -> "▼" end
+        _ -> "◀" end
+    end
+end
+
+# the way a patroller will step next, as an arrow
+let patrol_arrow
+    : CwLevel -> Int -> Int -> Int -> String
+    = fn lv, pi, si, d ->
+        arrow_between (Engine:path_pos lv pi si)
+            (Engine:path_pos lv pi < fst < Engine:patrol_next (len < Engine:nth_or [] pi < Engine:lv_paths lv) si d)
+    end
+end
+
+let arrow_between
+    : Pt -> Pt -> String
+    = fn a, b ->
+        cond (over ls fst a b) ">"
+      < cond (over gr fst a b) "<"
+      < cond (over ls rst a b) "v"
+      < cond (over gr rst a b) "^" " "
+    end
+end
+
+let tile_cell
+    : CwLevel -> CwState -> Pt -> String
+    = fn lv, st, p -> tile_for lv st p (Engine:tile_at lv p) end
+with tile_for
+    : CwLevel -> CwState -> Pt -> Char -> String
+    = fn lv, st, p, c ->
+        cond (eq c '#') wall_cell
+      < cond (eq c '^') (spike_cell p)
+      < cond (eq c 'X') exit_cell
+      < cond (eq c '@') (entrance_cell p)
+      < cond (eq c ',') (path_cell p)
+      < cond (gre (Engine:plate_group c) 0) (plate_cell lv st p c)
+      < cond (Engine:is_gate c) (gate_cell lv st p c) (floor_cell p)
+    end
+with wall_cell
+    : String
+    = Ansi:sgr (append (rgb_bg 62 66 96) (rgb_fg 104 108 146)) "▒▒"
+with spike_cell
+    : Pt -> String
+    = fn p -> Ansi:sgr (flatten [floor_bg p, [1], rgb_fg 255 90 70]) "^^" end
+with exit_cell
+    : String
+    = Ansi:sgr (flatten [rgb_bg 34 130 74, [1], rgb_fg 235 255 240]) "▣ "
+with entrance_cell
+    : Pt -> String
+    = fn p -> Ansi:sgr (append (floor_bg p) (rgb_fg 110 124 160)) "◇ " end
+with path_cell
+    : Pt -> String
+    = fn p -> Ansi:sgr (append (floor_bg p) (rgb_fg 160 100 175)) "··" end
+with floor_cell
+    : Pt -> String
+    = fn p -> Ansi:sgr (floor_bg p) "  " end
+with plate_cell
+    : CwLevel -> CwState -> Pt -> Char -> String
+    = fn lv, st, p, c ->
+        Ansi:sgr (flatten [floor_bg p, [1], color_fg < group_color < Engine:plate_group c])
+            (append (cond (Search:contains p < Engine:entity_pts lv st) "◉" "◎") [c])
+    end
+with gate_cell
+    : CwLevel -> CwState -> Pt -> Char -> String
+    = fn lv, st, p, c ->
+        cond (Engine:gate_open lv st p c)
+            (Ansi:sgr (append (floor_bg p) (color_fg < dim_color < group_color < Engine:gate_group c)) (append "░" [c]))
+            (Ansi:sgr (flatten [color_bg < dim_color < group_color < Engine:gate_group c, [1], color_fg < group_color < Engine:gate_group c])
+                (append "▒" [c])
+            )
+    end
+end
+
+# player, enemies, bullet, leaper target, then ground
+let cell_text
+    : CwLevel -> CwState -> (List Pt * List Pt) -> Pt -> String
+    = fn lv, st, info, p ->
+        cond (eq p < Engine:st_player st)
+            (player_cell st)
+            (cell_enemy lv st info p < Engine:enemy_at lv st p)
+    end
+end
+
+let cell_enemy
+    : CwLevel -> CwState -> (List Pt * List Pt) -> Pt -> Maybe (Int * CwEnemy) -> String
+    = fn lv, st, info, p -> match
+        Maybe:Val ie -> enemy_cell lv (fst info) (rst ie) end
+        Maybe:Nil    ->
+            cond (Engine:bullet_at st p)
+                (bullet_cell p)
+                (cond (Search:contains p < rst info) target_cell < tile_cell lv st p)
+        end
+    end end
+end
+
+let alerted_followers
+    : CwLevel -> CwState -> List Pt
+    = fn lv, st ->
+        filter (fn p -> Engine:line_clear lv st p < Engine:st_player st end)
+            (flat_following lv < Engine:st_enemies st)
+    end
+end
+
+let flat_following
+    : CwLevel -> List (Int * CwEnemy) -> List Pt
+    = match
+        _, []                     -> [] end
+        lv, List:Cons (ie * rest) -> append (follower_pos < rst ie) (flat_following lv rest) end
+    end
+with follower_pos
+    : CwEnemy -> List Pt
+    = match
+        CwEnemy:EFollower p -> [p] end
+        _                   -> [] end
+    end
+end
+
+let leaper_marks
+    : List (Int * CwEnemy) -> List Pt
+    = match
+        []                    -> [] end
+        List:Cons (ie * rest) -> append (leaper_mark < rst ie) (leaper_marks rest) end
+    end
+with leaper_mark
+    : CwEnemy -> List Pt
+    = match
+        CwEnemy:ELeaper (_ * (cd * tg)) -> cond (gr cd 0) [tg] [] end
+        _                               -> [] end
+    end
+end
+
+# ======================================================================================
+# The screen
+# ======================================================================================
+
+let spaces
+    : Int -> String
+    = flip repeat " "
+end
+
+let center
+    : Int -> String -> String
+    = fn cols, s -> append (spaces < max 0 < div (sub cols < Ansi:visible_length s) 2) s end
+end
+
+# first visible col (or row) of a map `size` wide w/ a window `view` wide, `p` in middle
+let camera
+    : Int -> Int -> Int -> Int
+    = fn size, view, p ->
+        cond (lse size view) 0 (clamp 0 (sub size view) < sub p < div view 2)
+    end
+end
+
+# greedy word wrap
+let wrap
+    : Int -> String -> List String
+    = fn width, text -> go width (Str:words text) [] end
+with go
+    : Int -> List String -> String -> List String
+    = match
+        _, [], cur -> cond (Str:is_empty cur) [] [cur] end
+        width, List:Cons (w * ws), cur ->
+            cond (Str:is_empty cur) (go width ws w)
+          < cond (lse (add (succ < len cur) (len w)) width)
+                (go width ws < append cur < append " " w)
+                (List:Cons < cur * go width ws w)
+        end
+    end
+end
+
+let hint_lines
+    : Int -> String -> List String
+    = fn cols, text -> two_lines (map (comp (center cols) Ansi:dim) (wrap (min 70 (sub cols 6)) text)) end
+with two_lines
+    : List String -> List String
+    = comp (take 2) (flip append ["", ""])
+end
+
+# don't ask me to explain this
+let map_lines
+    : CwLevel -> CwState -> Int -> Int -> List String
+    = fn lv, st, cols, vh ->
+        map_rows lv st cols (alerted_followers lv st * leaper_marks (Engine:st_enemies st))
+            (min (Engine:lv_width lv) (div (sub cols 2) 2))
+            (min vh < Engine:lv_height lv)
+    end
+with map_rows
+    : CwLevel -> CwState -> Int -> (List Pt * List Pt) -> Int -> Int -> List String
+    = fn lv, st, cols, info, vw, vh ->
+        map (fn j -> map_row lv st info
+            (spaces < div (sub cols < mul 2 vw) 2)
+            (camera (Engine:lv_width lv) vw < fst < Engine:st_player st) vw
+            (add (camera (Engine:lv_height lv) vh < rst < Engine:st_player st) j)
+        end) (range 0 vh)
+    end
+with map_row
+    : CwLevel -> CwState -> (List Pt * List Pt) -> String -> Int -> Int -> Int -> String
+    = fn lv, st, info, margin, ox, vw, y ->
+        append margin < flatten < map (fn i -> cell_text lv st info (add ox i * y) end) (range 0 vw)
+    end
+end
+
+# ======================================================================================
+# The whole frame
+# ======================================================================================
+
+let title_text
+    : String
+    = Ansi:sgr [1, 38, 2, 255, 200, 60] "C L O C K W O R K   D U N G E O N"
+end
+
+let banner
+    : Int -> List String
+    = fn cols -> [center cols title_text, center cols sample_row, ""] end
+with sample_row
+    : String
+    = Str:join "  " [ Ansi:sgr (append [1] (rgb_fg 60 200 255)) "@", Ansi:sgr (append [1] (rgb_fg 255 105 105)) "F", Ansi:sgr (append [1] (rgb_fg 235 140 255)) "P",
+                      Ansi:sgr (append [1] (rgb_fg 255 215 80)) "▲", Ansi:sgr (append [1] (rgb_fg 255 175 70)) "R", Ansi:sgr (append [1] (rgb_fg 125 245 145)) "L",
+                      Ansi:sgr (append [1] (rgb_fg 255 90 70)) "^^", Ansi:sgr (rgb_fg 255 200 60) "◎", Ansi:sgr (rgb_fg 120 255 170) "▣" ]
+end
+
+let status_line
+    : Int -> CwState -> Bool -> Int -> String
+    = fn cols, st, dash_mode, undos -> center cols < flatten [
+        Ansi:bold < append "Turn " < show < Engine:st_turn st, "   ·   ",
+        append "Undos " < show undos, "   ·   ",
+        cond dash_mode (Ansi:sgr [1, 38, 2, 255, 230, 90] "DASH: pick a direction")
+      < cond (gr (Engine:st_cooldown st) 0)
+            (Ansi:dim "Dash: recharging")
+            (Ansi:sgr [38, 2, 120, 255, 170] "Dash: ready")
+    ] end
+end
+
+let help_lines
+    : Int -> List String
+    = fn cols -> [
+        center cols < Ansi:dim "Move: WASD/arrows   Wait: space   Dash: Shift+WASD or f then direction",
+        center cols < Ansi:dim "Undo: u   Restart: r   Menu: q / Esc"
+    ] end
+end
+
+let level_text
+    : Int -> Int -> CwLevel -> String
+    = fn n, total, lv -> flatten [
+        "Level ", show < succ n, " of ", show total, "  ·  ",
+        Ansi:bold < Engine:lv_name lv, "  ·  par ", show < Engine:lv_par lv
+    ] end
+end
+
+let frame_lines
+    : Int -> Int -> Int -> Int -> CwLevel -> CwState -> String -> Int -> Bool -> List String
+    = fn cols, rows, n, total, lv, st, msg, undos, dash_mode -> flatten [
+        [center cols title_text, center cols < level_text n total lv],
+        hint_lines cols < Engine:lv_hint lv,
+        [""],
+        map_lines lv st cols < sub rows 10,
+        ["", status_line cols st dash_mode undos, center cols msg],
+        help_lines cols
+    ] end
+end
+
+# ---- putting lines on the screen
+
+let place
+    : Int -> List String -> String
+    = match
+        _, []                     -> [] end
+        row, List:Cons (ln * lns) ->
+            flatten [Ansi:move_to row 1, Ansi:clear_line, ln, place (succ row) lns]
+        end
+    end
+end
+
+let too_small
+    : Int -> Int -> String
+    = fn cols, rows -> flatten [
+        Ansi:clear_screen,
+        Ansi:move_to 1 1,
+        Ansi:sgr [1, 38, 2, 255, 215, 80]
+        < flatten ["Please make the window larger: this needs 64x20, it is ", show cols, "x", show rows]
+    ] end
+end
+
+let show_lines
+    : (Int -> Int -> List String) -> IO Unit
+    = fn build -> Term:size > bind fn sz ->
+        paint (fst sz) (rst sz) build
+    end end
+end
+
+let paint
+    : Int -> Int -> (Int -> Int -> List String) -> IO Unit
+    = fn cols, rows, build ->
+        cond (or (ls cols 64) (ls rows 20))
+            (print < too_small cols rows > then flush)
+            (paint_lines rows < build cols rows)
+    end
+end
+
+let paint_lines
+    : Int -> List String -> IO Unit
+    = fn rows, lines ->
+        print < place (max 1 < succ < div (sub rows < len lines) 2) lines > then flush
+    end
+end
+
+let clear
+    : IO Unit
+    = print Ansi:clear_screen
+end
+
+let redraw
+    : Int -> Int -> CwLevel -> CwState -> String -> Int -> Bool -> IO Unit
+    = fn n, total, lv, st, msg, undos, dash_mode ->
+        show_lines (fn cols, rows -> frame_lines cols rows n total lv st msg undos dash_mode end)
+    end
+end
+
+# ======================================================================================
+# Keys
+# ======================================================================================
+
+let char_act
+    : Char -> GAct
+    = match
+        'i' -> GAct:GMove 0 end
+        'l' -> GAct:GMove 1 end
+        'k' -> GAct:GMove 2 end
+        'j' -> GAct:GMove 3 end
+        'I' -> GAct:GDash 0 end
+        'L' -> GAct:GDash 1 end
+        'K' -> GAct:GDash 2 end
+        'J' -> GAct:GDash 3 end
+        ' ' -> GAct:GWait end
+        '.' -> GAct:GWait end
+        'u' -> GAct:GUndo end
+        'z' -> GAct:GUndo end
+        'x' -> GAct:GMenu end
+        'q' -> GAct:GMenu end
+        'c' -> GAct:GRestart end
+        'f' -> GAct:GDashMode end
+        _   -> GAct:GNone end
+    end
+end
+
+let key_act
+    : Key -> GAct
+    = match
+        Key:ArrowUp    -> GAct:GMove 0 end
+        Key:ArrowRight -> GAct:GMove 1 end
+        Key:ArrowDown  -> GAct:GMove 2 end
+        Key:ArrowLeft  -> GAct:GMove 3 end
+        Key:Escape     -> GAct:GMenu end
+        Key:Ctrl _     -> GAct:GMenu end
+        Key:Eof        -> GAct:GMenu end
+        Key:Resize     -> GAct:GRedraw end
+        Key:Ch c       -> char_act c end
+        _              -> GAct:GNone end
+    end
+end
+
+# ======================================================================================
+# Playing a level
+# ======================================================================================
+
+let note
+    : String -> String
+    = fn text -> Ansi:sgr [38, 2, 200, 205, 225] text end
+end
+
+let warn
+    : String -> String
+    = fn text -> Ansi:sgr [1, 38, 2, 255, 200, 80] text end
+end
+
+# omg death note reference
+let death_note
+    : String -> String
+    = fn why -> Ansi:sgr [1, 38, 2, 255, 95, 95] < flatten ["You died: ", why, ".  u = undo, r = restart"] end
+end
+
+let state_note
+    : CwState -> String
+    = fn st -> match
+        Maybe:Val why -> death_note why end
+        Maybe:Nil     -> "" end
+    end < Engine:death_cause st
+    end
+end
+
+let refusal
+    : CwState -> CwAction -> String
+    = fn st, a ->
+        cond (not < Engine:is_playing st)
+            (warn "You are dead.  u = undo, r = restart")
+      < cond (and (is_dash a) (gr (Engine:st_cooldown st) 0))
+            (warn "Dash is still recharging.")
+            (warn "Something is in the way.")
+    end
+with is_dash
+    : CwAction -> Bool
+    = match
+        CwAction:ADash _ -> Bool:True end
+        _                -> Bool:False end
+    end
+end
+
+let game_loop
+    : Int -> Int -> CwLevel -> List CwState -> CwState -> String -> Int -> Bool -> IO Outcome
+    = fn n, total, lv, past, st, msg, undos, dm ->
+        redraw n total lv st msg undos dm > then
+        Term:read_key > bind fn k ->
+            game_step n total lv past st undos dm < key_act k
+        end
+    end
+with game_step
+    : Int -> Int -> CwLevel -> List CwState -> CwState -> Int -> Bool -> GAct -> IO Outcome
+    = fn n, total, lv, past, st, undos, dm -> match
+        GAct:GMove d   -> attempt n total lv past st undos < cond dm (CwAction:ADash d) (CwAction:AMove d) end
+        GAct:GDash d   -> attempt n total lv past st undos < CwAction:ADash d end
+        GAct:GWait     -> attempt n total lv past st undos CwAction:AWait end
+        GAct:GUndo     -> undo n total lv past st undos end
+        GAct:GRestart  -> game_loop n total lv [] (Engine:init lv) (note "Level restarted.") 0 Bool:False end
+        GAct:GMenu     -> return Outcome:LevelQuit end
+        GAct:GDashMode -> game_loop n total lv past st (note "") undos < not dm end
+        GAct:GRedraw   -> clear > then (game_loop n total lv past st (note "") undos dm) end
+        GAct:GNone     -> game_loop n total lv past st "" undos dm end
+    end end
+end
+
+let attempt
+    : Int -> Int -> CwLevel -> List CwState -> CwState -> Int -> CwAction -> IO Outcome
+    = fn n, total, lv, past, st, undos, a ->
+        arrived n total lv past st undos a < Engine:play lv st a
+    end
+end
+
+let arrived
+    : Int -> Int -> CwLevel -> List CwState -> CwState -> Int -> CwAction -> Maybe CwState -> IO Outcome
+    = fn n, total, lv, past, st, undos, a -> match
+        Maybe:Nil ->
+            game_loop n total lv past st (refusal st a) undos Bool:False
+        end
+        Maybe:Val st2 ->
+            cond (Engine:is_won st2)
+                (return < Outcome:LevelWon (st2 * undos))
+                (game_loop n total lv (List:Cons (st * past)) st2 (state_note st2) undos Bool:False)
+        end
+    end end
+end
+
+let undo
+    : Int -> Int -> CwLevel -> List CwState -> CwState -> Int -> IO Outcome
+    = fn n, total, lv, past, st, undos -> match
+        []                      -> game_loop n total lv [] st (warn "Nothing to undo.") undos Bool:False end
+        List:Cons (prev * rest) -> game_loop n total lv rest prev (note "Rewound one turn.") (succ undos) Bool:False end
+    end past
+    end
+end
+
+# ======================================================================================
+# After a level
+# ======================================================================================
+
+let total_levels
+    : Int
+    = len Levels:all
+end
+
+let level_def
+    : Int -> CwDef
+    = fn n -> Engine:nth_or (Engine:first_of ("" * ("" * (0 * ([] * [])))) Levels:all) n Levels:all end
+end
+
+let win_note
+    : CwLevel -> CwState -> Int -> Bool -> String
+    = fn lv, st, undos, more ->
+        Ansi:sgr [1, 38, 2, 120, 255, 170] (flatten [
+            "LEVEL COMPLETE  ·  ",
+            show < Engine:st_turn st,
+            " turns (par ",
+            show < Engine:lv_par lv,
+            ")",
+            cond (eq (Engine:st_turn st) (Engine:lv_par lv)) "  ·  perfect!" "",
+            "  ·  ",
+            cond more "Enter = next level, q = menu" "Enter = finish"
+        ])
+    end
+end
+
+# True means move on
+let win_screen
+    : Int -> Int -> CwLevel -> CwState -> Int -> IO Bool
+    = fn n, total, lv, st, undos ->
+        redraw n total lv st (win_note lv st undos < ls (succ n) total) undos Bool:False > then
+        drain > then <
+        win_wait n total lv st undos
+    end
+end
+
+let win_wait
+    : Int -> Int -> CwLevel -> CwState -> Int -> IO Bool
+    = fn n, total, lv, st, undos ->
+        Term:read_key > bind < win_key n total lv st undos
+    end
+end
+
+let win_key
+    : Int -> Int -> CwLevel -> CwState -> Int -> Key -> IO Bool
+    = fn n, total, lv, st, undos -> match
+        Key:Enter      -> return Bool:True end
+        Key:Ch ' '     -> return Bool:True end
+        Key:Resize     -> clear > then < win_screen n total lv st undos end
+        Key:Ch 'q'     -> return Bool:False end
+        Key:Escape     -> return Bool:False end
+        Key:Ctrl _     -> return Bool:False end
+        Key:Eof        -> return Bool:False end
+        _              -> win_wait n total lv st undos end
+    end end
+end
+
+# throws away keys pressed during an animation (a closed input is not a key to throw away)
+let drain
+    : IO Unit
+    = Term:poll_key > bind < match
+        Maybe:Nil   -> return unit end
+        Maybe:Val k -> cond (is_eof k) (return unit) drain end
+    end
+end
+
+let is_eof
+    : Key -> Bool
+    = match
+        Key:Eof -> Bool:True end
+        _       -> Bool:False end
+    end
+end
+
+# best turns so far for each level, 0 for one not finished yet
+let update_nth a
+    : Int -> (a -> a) -> List a -> List a
+    = match
+        _, _, []                 -> [] end
+        0, f, List:Cons (x * xs) -> List:Cons (f x * xs) end
+        i, f, List:Cons (x * xs) -> List:Cons (x * update_nth (pred i) f xs) end
+    end
+end
+
+let record
+    : Int -> Int -> List Int -> List Int
+    = fn n, turns, progress ->
+        update_nth n (fn best -> cond (or (eq best 0) (ls turns best)) turns best end) progress
+    end
+end
+
+let first_unfinished
+    : List Int -> Int
+    = fn progress ->
+        map_nil_same (pred total_levels) (Search:find_index (eq 0) progress)
+    end
+end
+
+# ======================================================================================
+# Menus
+# ======================================================================================
+
+type MAct = MPrev + MNext + MAccept + MPick Int + MLeave + MRedraw + MIgnore
+end
+
+let menu_char
+    : Char -> MAct
+    = match
+        'i' -> MAct:MPrev end
+        'k' -> MAct:MNext end
+        ' ' -> MAct:MAccept end
+        'q' -> MAct:MLeave end
+        'x' -> MAct:MLeave end
+        c   -> cond (and (gre c '1') (lse c '9')) (MAct:MPick (sub (ord c) 49)) MAct:MIgnore end
+    end
+end
+
+let menu_act
+    : Key -> MAct
+    = match
+        Key:ArrowUp   -> MAct:MPrev end
+        Key:ArrowDown -> MAct:MNext end
+        Key:Enter     -> MAct:MAccept end
+        Key:Escape    -> MAct:MLeave end
+        Key:Ctrl _    -> MAct:MLeave end
+        Key:Eof       -> MAct:MLeave end
+        Key:Resize    -> MAct:MRedraw end
+        Key:Ch c      -> menu_char c end
+        _             -> MAct:MIgnore end
+    end
+end
+
+# pads to a width counting only what is visible (color codes take no room)
+let pad_visible
+    : Int -> String -> String
+    = fn w, s -> append s (spaces (max 0 (sub w (Ansi:visible_length s)))) end
+end
+
+let item_text
+    : Int -> Int -> Int -> String -> String
+    = fn w, sel, i, item ->
+        cond (eq i sel)
+            (Ansi:sgr [1, 38, 2, 20, 24, 40, 48, 2, 255, 200, 60] (flatten [
+                "  ▶ ",
+                Str:pad_left 2 ' ' (show (succ i)),
+                ". ",
+                Ansi:strip item,
+                spaces (max 0 (sub w (Ansi:visible_length item))),
+                "  "
+            ]))
+            (flatten ["    ", Ansi:dim (Str:pad_left 2 ' ' (show (succ i))), ". ", pad_visible w item, "  "])
+    end
+end
+
+let widest
+    : List String -> Int
+    = comp (foldl max 0) (map Ansi:visible_length)
+end
+
+let item_lines
+    : Int -> Int -> List String -> Int -> Int -> List String
+    = match
+        _, _, [], _, _ -> [] end
+        cols, w, List:Cons (item * rest), sel, i ->
+            List:Cons (center cols (item_text w sel i item) * item_lines cols w rest sel (succ i))
+        end
+    end
+end
+
+let menu_lines
+    : Int -> String -> List String -> Int -> List String
+    = fn cols, subtitle, items, sel -> flatten [
+        banner cols,
+        [center cols < Ansi:bold subtitle, ""],
+        item_lines cols (widest items) items sel 0,
+        ["", center cols < Ansi:dim "↑/↓ choose · Enter select · 1-9 jump · q back"]
+    ] end
+end
+
+# Shows a menu and returns the index chosen, or -1 if cancelled.
+let menu
+    : String -> List String -> Int -> IO Int
+    = fn subtitle, items, sel ->
+        show_lines (fn cols, rows -> menu_lines cols subtitle items sel end) > then <
+        bind (comp (menu_step subtitle items sel) menu_act) Term:read_key
+    end
+end
+
+let menu_step
+    : String -> List String -> Int -> MAct -> IO Int
+    = fn subtitle, items, sel -> match
+        MAct:MPrev     -> menu subtitle items (mod (add (pred sel) (len items)) (len items)) end
+        MAct:MNext     -> menu subtitle items (mod (succ sel) (len items)) end
+        MAct:MAccept   -> return sel end
+        MAct:MPick n   -> cond (ls n (len items)) (return n) (menu subtitle items sel) end
+        MAct:MLeave    -> return -1 end
+        MAct:MRedraw   -> clear > then (menu subtitle items sel) end
+        MAct:MIgnore   -> menu subtitle items sel end
+    end end
+end
+
+# ---- the pages
+
+let level_item
+    : List Int -> Int -> CwDef -> String
+    = fn progress, i, d -> flatten [
+        Engine:def_name d,
+        "   ",
+        cond (gr (Engine:nth_or 0 i progress) 0)
+            (Ansi:sgr [38, 2, 120, 255, 170] (flatten ["✓ ", show (Engine:nth_or 0 i progress), "/", show (Engine:def_par d)]))
+            (Ansi:dim (append "par " (show (Engine:def_par d))))
+    ] end
+end
+
+let level_items
+    : List Int -> Int -> List CwDef -> List String
+    = match
+        _, _, []                        -> [] end
+        progress, i, List:Cons (d * ds) -> List:Cons (level_item progress i d * level_items progress (succ i) ds) end
+    end
+end
+
+let main_menu
+    : List Int -> IO Unit
+    = fn progress ->
+        clear > then (
+        menu "Main menu" ["Play", "Select level", "How to play", "Quit"] 0
+      > bind fn i -> main_choice i progress end)
+    end
+end
+
+let main_choice
+    : Int -> List Int -> IO Unit
+    = fn i, progress ->
+        cond (eq i 0) (play_from (first_unfinished progress) progress)
+      < cond (eq i 1) (level_select progress)
+      < cond (eq i 2) (how_to_play > then (main_menu progress)) (return unit)
+    end
+end
+
+let level_select
+    : List Int -> IO Unit
+    = fn progress ->
+        clear > then (
+        menu "Select a level" (level_items progress 0 Levels:all) (first_unfinished progress)
+      > bind fn i -> cond (ls i 0) (main_menu progress) (play_from i progress) end)
+    end
+end
+
+let play_from
+    : Int -> List Int -> IO Unit
+    = fn n, progress ->
+        cond (gre n total_levels)
+            (all_done > then (main_menu progress))
+            (clear > then (run_level n progress (Engine:build (level_def n))))
+    end
+end
+
+let run_level
+    : Int -> List Int -> CwLevel -> IO Unit
+    = fn n, progress, lv ->
+        game_loop n total_levels lv [] (Engine:init lv) "" 0 Bool:False
+      > bind fn out -> after_level n progress lv out end
+    end
+end
+
+let after_level
+    : Int -> List Int -> CwLevel -> Outcome -> IO Unit
+    = fn n, progress, lv -> match
+        Outcome:LevelQuit             -> main_menu progress end
+        Outcome:LevelWon (st * undos) -> win_screen n total_levels lv st undos
+          > bind fn more -> cond more
+                (play_from (succ n) (record n (Engine:st_turn st) progress))
+                (main_menu (record n (Engine:st_turn st) progress))
+            end
+        end
+    end end
+end
+
+# ---- a page of text, until a key
+
+let text_page
+    : List String -> IO Unit
+    = fn lines ->
+        clear > then <
+        show_lines (fn cols, rows -> append (banner cols) (block cols lines) end) > then <
+        Term:read_key > then <
+        return unit
+    end
+end
+
+# lines centred as one block, so they keep their left edge
+let block
+    : Int -> List String -> List String
+    = fn cols, lines ->
+        map (append < spaces < max 0 < div (sub cols < foldl max 0 < map Ansi:visible_length lines) 2) lines
+    end
+end
+
+let all_done
+    : IO Unit
+    = text_page [
+        Ansi:sgr [1, 38, 2, 120, 255, 170] "You have escaped every dungeon.",
+        "",
+        "Thank you for playing Clockwork Dungeon.",
+        "",
+        Ansi:dim "Press any key"
+    ]
+end
+
+let key_line
+    : String -> String -> String
+    = fn glyph, text -> flatten [Str:pad_right 4 ' ' glyph, text] end
+end
+
+let how_to_play
+    : IO Unit
+    = text_page [
+        Ansi:bold "HOW TO PLAY",
+        "",
+        "Reach the exit ▣. You act, then bullets fly one tile, then every enemy acts.",
+        "An enemy beside you (not diagonally) attacks first, except runners.",
+        "Bullets kill whatever they hit. Spikes kill anyone who steps on them.",
+        "",
+        flatten [Ansi:sgr (append [1] (rgb_fg 255 105 105)) "F!", " follower   walks at you while it can see you; does not mind spikes"],
+        flatten [Ansi:sgr (append [1] (rgb_fg 235 140 255)) "P>", " patroller  walks its dotted path to the end and back (arrow = next step)"],
+        flatten [Ansi:sgr (append [1] (rgb_fg 255 215 80)) "▲3", " turret     fires the way it points when its number reaches 0"],
+        flatten [Ansi:sgr (append [1] (rgb_fg 255 175 70)) "R ", " runner     runs from you or anything within 2 steps; never attacks"],
+        flatten [Ansi:sgr (append [1] (rgb_fg 125 245 145)) "L2", " leaper     sees you in a line, marks !!, jumps there 2 turns later"],
+        flatten [Ansi:sgr (append [1] (rgb_fg 255 200 60)) "◎a", " plate  opens its gate ",
+            Ansi:sgr (rgb_fg 255 200 60) "▒A", " while held (by anyone); ",
+            Ansi:sgr (rgb_fg 255 200 60) "░1", " closes while held"
+        ],
+        "",
+        "Dash (Shift+IJKL, or f then a direction): two tiles at once, flying over the",
+        "middle one; takes one turn to recover. Undo (u/z) is unlimited. Restart: r/c.",
+        "",
+        Ansi:dim "Press any key"
+    ]
+end
+
+# ======================================================================================
+# Starting up
+# ======================================================================================
+
+let setup
+    : IO Unit
+    = print (flatten [Ansi:alt_screen_on, Ansi:hide_cursor, Ansi:clear_screen]) > then flush
+end
+
+let teardown
+    : IO Unit
+    = print (flatten [Ansi:reset, Ansi:show_cursor, Ansi:alt_screen_off]) > then flush
+end
+
+let main
+    : IO Int
+    = setup > then <
+      Term:with_raw_mode (main_menu (map (fn d -> 0 end) Levels:all)) > then
+      teardown > then <
+      return 0
+end

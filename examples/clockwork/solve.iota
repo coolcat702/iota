@@ -1,0 +1,304 @@
+module Main is
+
+# Finds the shortest way through each level by bfs. A level the search cannot finish is reported as UNSOLVED
+#
+#     iota examples/clockwork/solve.iota --run                run every level
+#     iota examples/clockwork/solve.iota --run -- 3           only level 3
+#     iota examples/clockwork/solve.iota --run -- 3 nodash    level 3 without using dash
+#     iota examples/clockwork/solve.iota --run -- file map.txt    try a map from a text file
+#                                                             (every turret gets period 3, first shot 1)
+#     iota examples/clockwork/solve.iota --run -- check       also measure what dash and the
+#                                                             enemies add to each level
+#
+# `check` solves every level as it is, and again with dash, enemies, spikes or plates and gates
+# taken away, and says whether each is REQUIRED (the level becomes impossible), adds turns
+# (+N), or changes nothing (-). A level built around something it doesn't need is a pretty shitty puzzle.
+#
+# The solution is printed as letters: U D L R step, u d l r dash, w wait.
+# The exit status is 1 if any level could not be solved.
+
+import file engine.iota
+import file levels.iota
+import file std/hashset.iota
+import file std/str.iota
+import file std/time.iota
+
+let move_actions
+    : List CwAction
+    = [CwAction:AMove 0, CwAction:AMove 1, CwAction:AMove 2, CwAction:AMove 3, CwAction:AWait]
+end
+
+let dash_actions
+    : List CwAction
+    = [CwAction:ADash 0, CwAction:ADash 1, CwAction:ADash 2, CwAction:ADash 3]
+end
+
+let action_char
+    : CwAction -> Char
+    = match
+        CwAction:AWait   -> 'w' end
+        CwAction:AMove 0 -> 'U' end
+        CwAction:AMove 1 -> 'R' end
+        CwAction:AMove 2 -> 'D' end
+        CwAction:AMove _ -> 'L' end
+        CwAction:ADash 0 -> 'u' end
+        CwAction:ADash 1 -> 'r' end
+        CwAction:ADash 2 -> 'd' end
+        CwAction:ADash _ -> 'l' end
+    end
+end
+
+# two independent 32-bit hashes of a state, so two different states aren't mistaken for each other
+let key_of
+    : CwState -> (Int * Int)
+    = fn st -> (hash (Engine:state_key st) * hash (reverse < Engine:state_key st)) end
+end
+
+# states seen, states to try
+type Search = Searching (HashSet (Int * Int) * List (CwState * String)) + Solved String
+end
+
+let expand
+    : CwLevel -> List CwAction -> Search -> (CwState * String) -> Search
+    = fn lv, acts, srch, node -> foldl (try_action lv node) srch acts end
+end
+
+let try_action
+    : CwLevel -> (CwState * String) -> Search -> CwAction -> Search
+    = fn lv, node, srch, a ->
+        outcome (Engine:play lv (fst node) a) (append (rst node) [action_char a]) srch
+    end
+end
+
+let outcome
+    : Maybe CwState -> String -> Search -> Search
+    = match
+        Maybe:Nil, _, srch       -> srch end
+        Maybe:Val st, path, srch -> consider st path srch end
+    end
+end
+
+let consider
+    : CwState -> String -> Search -> Search
+    = fn st, path, srch -> match
+        Search:Solved p                 -> Search:Solved p end
+        Search:Searching (seen * next)  -> classify st path seen next end
+    end srch
+    end
+end
+
+let classify
+    : CwState -> String -> HashSet (Int * Int) -> List (CwState * String) -> Search
+    = fn st, path, seen, next ->
+        cond (Engine:is_won st)
+            (Search:Solved path)
+      < cond (not (Engine:is_playing st))
+            (Search:Searching (seen * next))
+      < cond (HashSet:member (key_of st) seen)
+            (Search:Searching (seen * next))
+            (Search:Searching (HashSet:insert (key_of st) seen * List:Cons ((st * path) * next)))
+    end
+end
+
+# (the solution or "" if there is none within the limit, how many states were seen)
+let bfs
+    : CwLevel -> List CwAction -> Int -> HashSet (Int * Int) -> List (CwState * String) -> (String * Int)
+    = fn lv, acts, limit, seen, frontier ->
+        cond (is_default frontier)
+            ("" * HashSet:size seen)
+      < cond (gr (HashSet:size seen) limit)
+            ("limit" * HashSet:size seen)
+            (next_depth lv acts limit (foldl (expand lv acts) (Search:Searching (seen * [])) frontier))
+    end
+end
+
+let next_depth
+    : CwLevel -> List CwAction -> Int -> Search -> (String * Int)
+    = fn lv, acts, limit -> match
+        Search:Solved p                -> (p * 0) end
+        Search:Searching (seen * next) -> bfs lv acts limit seen next end
+    end end
+end
+
+let solve
+    : CwLevel -> Bool -> (String * Int)
+    = fn lv, dashing ->
+        bfs lv (cond dashing (append move_actions dash_actions) move_actions) 200000
+            (HashSet:singleton (key_of (Engine:init lv))) [Engine:init lv * ""]
+    end
+end
+
+let describe
+    : Int -> CwDef -> Bool -> IO Bool
+    = fn n, d, dashing -> Time:monotonic
+        > bind < fn t0 ->
+            return (solve (Engine:build d) dashing)
+            > bind < fn result ->
+                Time:monotonic
+                > bind < fn t1 -> report n d dashing result (sub t1 t0) end
+            end
+        end
+    end
+end
+
+let report
+    : Int -> CwDef -> Bool -> (String * Int) -> Float -> IO Bool
+    = fn n, d, dashing, result, secs ->
+        cond (is_solution (fst result))
+            (println (flatten [show n, ". ", Engine:def_name d, cond dashing "" " [no dash]", ": ", show (len (fst result)), " turns (par ", show (Engine:def_par d), cond (par_ok d dashing (len (fst result))) ")" ") PAR IS WRONG", ", ", show secs, " s  ", fst result]) > then flush > then < return < par_ok d dashing < len < fst result)
+            (println (flatten [show n, ". ", Engine:def_name d, cond dashing "" " [no dash]", ": ", cond (eq (fst result) "limit") "UNSOLVED (gave up after 200000 states)" "UNSOLVABLE", ", ", show secs, " s"]) > then flush > then (return Bool:False))
+      end
+end
+
+# a level's par must be exactly the shortest solution (only checked for the normal game)
+let par_ok
+    : CwDef -> Bool -> Int -> Bool
+    = fn d, dashing, turns -> or (not dashing) (or (eq (Engine:def_par d) 0) (eq (Engine:def_par d) turns)) end
+end
+
+let is_solution
+    : String -> Bool
+    = fork and (neq "") (neq "limit")
+end
+
+let nth_def
+    : Int -> CwDef
+    = fn n -> Engine:nth_or (Engine:first_of ("" * ("" * (0 * ([] * []))))  Levels:all) (pred n) Levels:all end
+end
+
+let run_all
+    : Int -> List CwDef -> Bool -> IO Bool
+    = fn n, defs, dashing -> match
+        []                 -> return Bool:True end
+        List:Cons (d * ds) ->
+            bind (fn ok -> bind (fn rest -> return (and ok rest) end) (run_all (succ n) ds dashing) end) (describe n d dashing)
+        end
+    end defs
+    end
+end
+
+# the same level with every character that `gone` accepts turned into plain floor
+let without
+    : (Char -> Bool) -> CwDef -> CwDef
+    = fn gone, d ->
+        (Engine:def_name d * (Engine:def_hint d * (Engine:def_par d *
+            (map (map (fn c -> cond (gone c) '.' c end)) (Engine:def_rows d) * Engine:def_turrets d))))
+    end
+end
+
+let is_enemy_or_path
+    : Char -> Bool
+    = fork or Engine:is_enemy_char (eq ',')
+end
+
+let is_gear
+    : Char -> Bool
+    = fork or Engine:is_gate (comp (ls -1) Engine:plate_group)
+end
+
+let is_spike
+    : Char -> Bool
+    = eq '^'
+end
+
+# turns to finish, or -1
+let turns_of
+    : CwDef -> Int
+    = comp (comp (comp solution_turns fst) (flip solve Bool:True)) Engine:build
+end
+
+let turns_of_nodash
+    : CwDef -> Int
+    = comp (comp (comp solution_turns fst) (flip solve Bool:False)) Engine:build
+end
+
+let solution_turns
+    : String -> Int
+    = fn s -> cond (is_solution s) (len s) -1 end
+end
+
+# the turns it takes (or why it can't be done)
+let effect
+    : Int -> Int -> String
+    = fn base, other -> cond (ls other 0) "impossible" (show other) end
+end
+
+let check_level
+    : Int -> CwDef -> IO Bool
+    = fn n, d -> check_with n d < turns_of d end
+end
+
+let check_with
+    : Int -> CwDef -> Int -> IO Bool
+    = fn n, d, base ->
+        println (flatten [
+            Str:pad_left 2 ' ' < show n,
+            ". ",
+            Str:pad_right 18 ' ' < Engine:def_name d,
+            Str:pad_left 4 ' ' < cond (ls base 0) "NONE" (show base),
+            " turns | without: dash ", Str:pad_right 10 ' ' < effect base < turns_of_nodash d,
+            " enemies ", Str:pad_right 10 ' ' < effect base < turns_of < without is_enemy_or_path d,
+            " spikes ", Str:pad_right 10 ' ' < effect base < turns_of < without is_spike d,
+            " gates ", effect base < turns_of < without is_gear d]) > then
+        flush > then <
+        return < gre base 0
+    end
+end
+
+let check_all
+    : Int -> List CwDef -> IO Bool
+    = fn n -> match
+        []                 -> return Bool:True end
+        List:Cons (d * ds) ->
+            (check_level n d)
+          > bind fn ok ->
+                check_all (succ n) ds
+              > bind fn rest -> return (and ok rest) end
+            end
+        end
+    end end
+end
+
+let main
+    : List String -> IO Int
+    = fn argv ->
+        run_args argv
+      > bind (fn ok -> return (cond ok 0 1) end)
+    end
+end
+
+let run_args
+    : List String -> IO Bool
+    = match
+        []                                        -> run_all 1 Levels:all Bool:True end
+        List:Cons ("check" * _)                   -> check_all 1 Levels:all end
+        List:Cons ("file" * List:Cons (path * _)) -> run_file path end
+        List:Cons (n * [])                        -> run_one (map_nil_same 1 < Str:parse_int n) Bool:True end
+        List:Cons (n * List:Cons (_ * _))         -> run_one (map_nil_same 1 < Str:parse_int n) Bool:False end
+    end
+end
+
+let run_one
+    : Int -> Bool -> IO Bool
+    = fn n, dashing -> describe n (nth_def n) dashing end
+end
+
+# a map from a text file, for trying out designs
+let run_file
+    : String -> IO Bool
+    = fn path -> bind (file_level path) (read_file path) end
+end
+
+let file_level
+    : String -> Either IOError String -> IO Bool
+    = fn path -> match
+        Either:Left e     -> println (concat "cannot read the map: " < show e) > then < return Bool:False end
+        Either:Right text -> describe 1 (file_def (Str:lines text)) Bool:True end
+      end
+    end
+end
+
+let file_def
+    : List String -> CwDef
+    = fn rows -> ("map" * ("" * (0 * (rows * map (const (3 * 1)) (range 0 20))))) end
+end

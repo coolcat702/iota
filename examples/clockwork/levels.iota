@@ -1,0 +1,104 @@
+module Levels is
+
+# level is: name, hint, par (the fewest turns, found by solve.iota), the map, and a
+# (period, turns until the first shot) for each turret in reading order.
+
+import file engine.iota
+
+let level
+    : String -> String -> Int -> List String -> List (Int * Int) -> CwDef
+    = fn name, hint, par, rows, turrets -> (name * (hint * (par * (rows * turrets)))) end
+end
+
+let all
+    : List CwDef
+    = [ level "First Steps" "Reach the exit. Walls block you; waiting passes a turn." 8
+            [ "#########",
+              "#@..#...#",
+              "#.#.#.#.#",
+              "#.#...#X#",
+              "#.#####.#",
+              "#.......#",
+              "#########" ] [],
+
+        level "Leap of Faith" "Spikes kill. A dash flies over the tile in the middle, then needs a turn to recover." 8
+            [ "#############",
+              "#@..^...^..X#",
+              "#...^...^...#",
+              "#...^...^...#",
+              "#############" ] [],
+
+        level "Pressure" "Stand on a plate and its gate opens. A gate stays open around anyone in it." 7
+            [ "#########",
+              "#@..#...#",
+              "#...#.#X#",
+              "#..aA...#",
+              "#...#.#.#",
+              "#########" ] [],
+
+        level "Through the Gate" "" 8
+            [ "###############",
+              "#@.a.A..^..X..#",
+              "###############" ] [],
+
+        level "The Follower" "A follower walks straight at you, no matter what is in the way." 8
+            [ "#############",
+              "#@...^..F..X#",
+              "#############" ] [],
+
+        level "Patrol Route" "A patroller walks its marked path to the end and back. Keep out of its reach." 7
+            [ "###########",
+              "#####P#####",
+              "#####,#####",
+              "#@...,...X#",
+              "#####,#####",
+              "#####,#####",
+              "###########" ] [],
+
+        level "Crossfire" "A turret counts down (the number beside it) and fires along the way it faces." 13
+            [ "################",
+              "#@...........Xw#",
+              "#.#.#.#.#.#.#.##",
+              "################" ] [(3 * 2)],
+
+        level "Cowards" "Runners flee when anything comes within two steps." 12
+            [ "#############",
+              "#X###########",
+              "#A###########",
+              "#@.....R...a#",
+              "#############" ] [],
+
+        level "Pounce" "A leaper marks where it saw you, then jumps there two turns later. Be elsewhere." 10
+            [ "###############",
+              "#.....#########",
+              "#@....L.......X#",
+              "#.....#########",
+              "###############" ] [],
+
+        level "Inversion" "A gate numbered 1-4 starts open and shuts while its plate is held down." 14
+            [ "#################",
+              "#.......ss......#",
+              "#.......11......#",
+              "#...............#",
+              "#......a........#",
+              "#...............#",
+              "#@.............X#",
+              "#################" ] [(1 * 1), (1 * 1)],
+
+        level "The Labyrinth" "" 79
+            [ "#########################################",
+              "#@....#....................w#.......#X..#",
+              "#####.###.#####.###.#.###.###.#.###.###.#",
+              "#...#...#.#...#...#.#...#.....#...#.#...#",
+              "###.###.###.#.#####.###.#####.###.#^#.#.#",
+              "#...#...#...#.......#.#.#...#.#...#.#.#.#",
+              "#.#.#.###.###########.#.#.#.###.###.#.###",
+              "#.#.#.#...#.#.....#...#...#.#...#.#.#...#",
+              "#.###.#.###.#.#.#.#.#######.#.###.#.###.#",
+              "#.....#.#.....#.#...#.....#.#...#.....#.#",
+              "#.#####.#.#####.###.#.###.#.###.#####.#.#",
+              "#^#.....#.....#...#.#.#.#.#...#...#.#...#",
+              "#.#.#########.###.###.#.#.###.###.#.###.#",
+              "#...#...........#.......#......^..#.....#",
+              "#########################################" ] [(4 * 1)] ]
+end

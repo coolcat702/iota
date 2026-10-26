@@ -1,0 +1,1081 @@
+module Engine is
+
+# turn order (after player)
+#   1. bullets move 1 tile
+#   2. enemies act in thhe order the level lists them in reading order (top to bottom,
+# left to right) An enemy that is next to the player (up, down, left or right) attacks
+# instead of doing anything else, except the runner, which never attacks. An enemy that
+# moves next to you will then attack on the NEXT turn, which gives you one turn to get
+# away, but stepping next to an enemy yourself gets you hit straight away.
+#
+# the map is a list of strings
+#     #         wall
+#     .         floor
+#     ^         spikes
+#     @         start
+#     X         exit
+#     a-d       pressure plates, held down by anyone standing on them (you or an enemy)
+#     A-D       gates that open while their plate (a-d) is held down. never close on someone
+#               standing in them
+#     1-4       inverted gates (close when plate held)
+#     ,         a patroller's path
+#     P         a patroller (on its path)
+#     F         follower
+#     R         runner
+#     L         leaper
+#     n e s w   a turret facing north, east, south or west
+
+import file std/str.iota
+import file std/search.iota
+
+# (col, row), row 0 at the top
+type Pt = Int * Int
+end
+
+type CwEnemy =
+    EFollower Pt
+  + EPatroller (Int * (Int * Int))     # path num, path pos, dir +1/-1
+  + ETurret (Pt * (Int * (Int * Int))) # pos, facing 0-3, period, count
+  + ERunner Pt
+  + ELeaper (Pt * (Int * Pt))          # pos, count, target
+end
+
+type CwStatus = Playing + Won + Dead String
+end
+
+type CwAction = AWait + AMove Int + ADash Int
+end
+
+# level definition
+type CwDef =
+    String            # name
+  * (String           # hint
+  * (Int              # par
+  * (List String      # map
+  * (List (Int * Int) # (period, count) for each turret in reading order
+  ))))
+end
+
+type CwLevel =
+    String                # name
+  * (String               # hint
+  * (List String          # map
+  * (Pt                   # start
+  * (List (Pt * Int)      # plates (pos, group)
+  * (List (List Pt)       # patrol paths
+  * (List (Int * CwEnemy) # enemies w/ number for acting order
+  * Int                   # par
+  ))))))
+end
+
+type CwState =
+    Pt                    # player
+  * (List (Int * CwEnemy) # enemies
+  * (List (Pt * Int)      # bullets (pos, dir)
+  * (Int                  # turn
+  * (Int                  # dash cooldown
+  * CwStatus              # game status
+  ))))
+end
+
+# ======================================================================================
+# Small helpers
+# ======================================================================================
+
+let nth_or a
+    : a -> Int -> List a -> a
+    = match
+        d, _, []                 -> d end
+        _, 0, List:Cons (x * _)  -> x end
+        d, i, List:Cons (_ * xs) -> nth_or d (pred i) xs end
+    end
+end
+
+let first_of a
+    : a -> List a -> a
+    = fn d, xs -> nth_or d 0 xs end
+end
+
+# ======================================================================================
+# Directions and positions: 0 up, 1 right, 2 down, 3 left
+# ======================================================================================
+
+let dir_x
+    : Int -> Int
+    = match
+        1 -> 1 end
+        3 -> -1 end
+        _ -> 0 end
+    end
+end
+
+let dir_y
+    : Int -> Int
+    = match
+        0 -> -1 end
+        2 -> 1 end
+        _ -> 0 end
+    end
+end
+
+let add_pt
+    : Pt -> Int -> Pt
+    = fn p, d -> (add (fst p) (dir_x d) * add (rst p) (dir_y d)) end
+end
+
+let opposite
+    : Int -> Int
+    = fn d -> mod (add d 2) 4 end
+end
+
+# steps between two places counting only up/down/left/right moves
+let dist
+    : Pt -> Pt -> Int
+    = fork (fork add) (comp2 abs < over sub fst) (comp2 abs < over sub rst)
+end
+
+let adjacent
+    : Pt -> Pt -> Bool
+    = comp2 (eq 1) dist
+end
+
+let before
+    : Pt -> Pt -> Bool
+    = fork (fork or) (over ls rst) (fork (fork and) (over eq rst) (over ls fst))
+end
+
+# ======================================================================================
+# Reading a level
+# ======================================================================================
+
+let def_name
+    : CwDef -> String
+    = fst
+end
+
+let def_hint
+    : CwDef -> String
+    = comp fst rst
+end
+
+let def_par
+    : CwDef -> Int
+    = comp (comp fst rst) rst
+end
+
+let def_rows
+    : CwDef -> List String
+    = comp (comp (comp fst rst) rst) rst
+end
+
+let def_turrets
+    : CwDef -> List (Int * Int)
+    = comp (comp (comp rst rst) rst) rst
+end
+
+let lv_name
+    : CwLevel -> String
+    = fst
+end
+
+let lv_hint
+    : CwLevel -> String
+    = comp fst rst
+end
+
+let lv_grid
+    : CwLevel -> List String
+    = comp (comp fst rst) rst
+end
+
+let lv_start
+    : CwLevel -> Pt
+    = comp (comp (comp fst rst) rst) rst
+end
+
+let lv_plates
+    : CwLevel -> List (Pt * Int)
+    = comp (comp (comp (comp fst rst) rst) rst) rst
+end
+
+let lv_paths
+    : CwLevel -> List (List Pt)
+    = comp (comp (comp (comp (comp fst rst) rst) rst) rst) rst
+end
+
+let lv_enemies
+    : CwLevel -> List (Int * CwEnemy)
+    = comp (comp (comp (comp (comp (comp fst rst) rst) rst) rst) rst) rst
+end
+
+let lv_par
+    : CwLevel -> Int
+    = comp (comp (comp (comp (comp (comp rst rst) rst) rst) rst) rst) rst
+end
+
+let lv_width
+    : CwLevel -> Int
+    = comp (comp len (first_of [])) lv_grid
+end
+
+let lv_height
+    : CwLevel -> Int
+    = comp len lv_grid
+end
+
+let row_cells
+    : Int -> Int -> String -> List (Pt * Char)
+    = match
+        _, _, []                -> [] end
+        y, x, List:Cons (c * cs) -> List:Cons (((x * y) * c) * row_cells y (succ x) cs) end
+    end
+end
+
+let all_cells
+    : Int -> List String -> List (Pt * Char)
+    = match
+        _, []                  -> [] end
+        y, List:Cons (r * rs)  -> append (row_cells y 0 r) (all_cells (succ y) rs) end
+    end
+end
+
+let pad_rows
+    : List String -> List String
+    = fn rows ->
+        map (fn r -> append r (repeat (sub (foldl max 0 (map len rows)) (len r)) "#") end) rows
+    end
+end
+
+let plate_group
+    : Char -> Int
+    = fn c -> cond (fork and (lse 'a') (gre 'd') c) (sub (ord c) 97) -1 end
+end
+
+let is_closed_gate
+    : Char -> Bool
+    = fork and (lse 'A') (gre 'D')
+end
+
+let is_inverted_gate
+    : Char -> Bool
+    = fork and (lse '1') (gre '4')
+end
+
+let is_gate
+    : Char -> Bool
+    = fork or is_closed_gate is_inverted_gate
+end
+
+let gate_group
+    : Char -> Int
+    = fn c -> cond (is_closed_gate c) (sub (ord c) 65) (sub (ord c) 49) end
+end
+
+let is_enemy_char
+    : Char -> Bool
+    = flip Search:contains ['F', 'R', 'L', 'P', 'n', 'e', 's', 'w']
+end
+
+let is_path_char
+    : Char -> Bool
+    = fork or (eq ',') (eq 'P')
+end
+
+# what an enemy letter leaves behind on the ground
+let ground_of
+    : Char -> Char
+    = fn c -> cond (eq c 'P') ',' (cond (is_enemy_char c) '.' c) end
+end
+
+let turret_facing
+    : Char -> Int
+    = match
+        'n' -> 0 end
+        'e' -> 1 end
+        's' -> 2 end
+        _   -> 3 end
+    end
+end
+
+# ---- patrol paths
+
+# connected group, leftovers
+let comp_of
+    : List Pt -> List Pt -> List Pt -> (List Pt * List Pt)
+    = match
+        rest, [], acc                -> (reverse acc * rest) end
+        rest, List:Cons (f * fs), acc ->
+            comp_step (filter (adjacent f) rest) (filter (comp not (adjacent f)) rest) fs f acc
+        end
+    end
+end
+
+let comp_step
+    : List Pt -> List Pt -> List Pt -> Pt -> List Pt -> (List Pt * List Pt)
+    = fn near, far, fs, f, acc -> comp_of far (append fs near) (List:Cons (f * acc)) end
+end
+
+let components
+    : List Pt -> List (List Pt)
+    = match
+        []                 -> [] end
+        List:Cons (p * ps) -> split_comp (comp_of ps [p] []) end
+    end
+end
+
+let split_comp
+    : (List Pt * List Pt) -> List (List Pt)
+    = fn cr -> List:Cons (order_path (fst cr) * components (rst cr)) end
+end
+
+let earliest
+    : List Pt -> Pt
+    = fn ps -> foldl (fn best, q -> cond (before q best) q best end) (first_of (0 * 0) ps) ps end
+end
+
+# the group laid out end to end, starting at the end that comes first in reading order
+let order_path
+    : List Pt -> List Pt
+    = fn cmp ->
+        walk_from (path_start cmp) (filter (neq < path_start cmp) cmp) []
+    end
+end
+
+let path_start
+    : List Pt -> Pt
+    = fn cmp ->
+        cond (is_default < ends_of cmp) (earliest cmp) (earliest < ends_of cmp)
+    end
+end
+
+let ends_of
+    : List Pt -> List Pt
+    = fn cmp -> filter (fn p -> eq 1 < len < filter (adjacent p) cmp end) cmp end
+end
+
+let walk_from
+    : Pt -> List Pt -> List Pt -> List Pt
+    = fn cur, rest, acc -> walk_next (Search:find (adjacent cur) rest) cur rest acc end
+end
+
+let walk_next
+    : Maybe Pt -> Pt -> List Pt -> List Pt -> List Pt
+    = match
+        Maybe:Nil, cur, _, acc      -> reverse (List:Cons (cur * acc)) end
+        Maybe:Val n, cur, rest, acc ->
+            walk_from n (filter (neq n) rest) (List:Cons (cur * acc))
+        end
+    end
+end
+
+# which path a place is on, and where on it
+let locate
+    : List (List Pt) -> Pt -> (Int * Int)
+    = fn paths, p ->
+        locate_in (map_nil_same 0 (Search:find_index (Search:contains p) paths)) paths p
+    end
+end
+
+let locate_in
+    : Int -> List (List Pt) -> Pt -> (Int * Int)
+    = fn pi, paths, p -> (pi * map_nil_same 0 (Search:find_index (eq p) (nth_or [] pi paths))) end
+end
+
+# ---- building
+
+let is_turret_char
+    : Char -> Bool
+    = flip Search:contains ['n', 'e', 's', 'w']
+end
+
+let enemy_of
+    : List (List Pt) -> List (Int * Int) -> Int -> Pt -> Char -> CwEnemy
+    = fn paths, cfgs, ti, p, c ->
+        cond (eq c 'F') (CwEnemy:EFollower p)
+      < cond (eq c 'R') (CwEnemy:ERunner p)
+      < cond (eq c 'L') (CwEnemy:ELeaper (p * (0 * p)))
+      < cond (eq c 'P') (patroller_at paths p) (turret_at p c (nth_or (3 * 1) ti cfgs))
+    end
+end
+
+let patroller_at
+    : List (List Pt) -> Pt -> CwEnemy
+    = comp2 patroller_on locate
+end
+
+let patroller_on
+    : (Int * Int) -> CwEnemy
+    = fn loc -> CwEnemy:EPatroller (fst loc * (rst loc * 1)) end
+end
+
+let turret_at
+    : Pt -> Char -> (Int * Int) -> CwEnemy
+    = fn p, c, cfg -> CwEnemy:ETurret (p * (turret_facing c * cfg)) end
+end
+
+# enemies in reading order, number for acting order. `ti` counts turrets so far.
+let make_enemies
+    : List (List Pt) -> List (Int * Int) -> Int -> Int -> List (Pt * Char) -> List (Int * CwEnemy)
+    = match
+        _, _, _, _, [] -> [] end
+        paths, cfgs, id, ti, List:Cons (pc * rest) ->
+            cond (is_enemy_char < rst pc)
+                (List:Cons < (id * enemy_of paths cfgs ti (fst pc) (rst pc)) *
+                    make_enemies paths cfgs (succ id) (cond (is_turret_char < rst pc) (succ ti) ti) rest)
+                (make_enemies paths cfgs id ti rest)
+        end
+    end
+end
+
+let mk_level
+    : String -> String -> List String -> Pt -> List (Pt * Int) -> List (List Pt) -> List (Int * CwEnemy) -> Int -> CwLevel
+    = fn name, hint, grid, start, plates, paths, enemies, par ->
+        (name * (hint * (grid * (start * (plates * (paths * (enemies * par)))))))
+    end
+end
+
+let build
+    : CwDef -> CwLevel
+    = fn d -> build_cells d < all_cells 0 < pad_rows < def_rows d end
+end
+
+let build_cells
+    : CwDef -> List (Pt * Char) -> CwLevel
+    = fn d, cells ->
+        build_final d cells < components < map fst (filter (comp is_path_char rst) cells)
+    end
+end
+
+let build_final
+    : CwDef -> List (Pt * Char) -> List (List Pt) -> CwLevel
+    = fn d, cells, paths -> mk_level
+        (def_name d)
+        (def_hint d)
+        (map (map ground_of) (pad_rows < def_rows d))
+        (first_of (0 * 0) (map fst < filter (comp (eq '@') rst) cells))
+        (map (fork pair fst < comp plate_group rst) < filter (comp (comp (ls -1) plate_group) rst) cells)
+        paths
+        (make_enemies paths (def_turrets d) 0 0 cells)
+        (def_par d)
+    end
+end
+
+# ======================================================================================
+# The state of a game
+# ======================================================================================
+
+let st_player
+    : CwState -> Pt
+    = fst
+end
+
+let st_enemies
+    : CwState -> List (Int * CwEnemy)
+    = comp fst rst
+end
+
+let st_bullets
+    : CwState -> List (Pt * Int)
+    = comp (comp fst rst) rst
+end
+
+let st_turn
+    : CwState -> Int
+    = comp (comp (comp fst rst) rst) rst
+end
+
+let st_cooldown
+    : CwState -> Int
+    = comp (comp (comp (comp fst rst) rst) rst) rst
+end
+
+let st_status
+    : CwState -> CwStatus
+    = comp (comp (comp (comp rst rst) rst) rst) rst
+end
+
+let mk_state
+    : Pt -> List (Int * CwEnemy) -> List (Pt * Int) -> Int -> Int -> CwStatus -> CwState
+    = fn p, es, bs, t, cd, status -> (p * (es * (bs * (t * (cd * status))))) end
+end
+
+let set_player
+    : CwState -> Pt -> CwState
+    = fn s, p -> mk_state p (st_enemies s) (st_bullets s) (st_turn s) (st_cooldown s) (st_status s) end
+end
+
+let set_enemies
+    : CwState -> List (Int * CwEnemy) -> CwState
+    = fn s, es -> mk_state (st_player s) es (st_bullets s) (st_turn s) (st_cooldown s) (st_status s) end
+end
+
+let set_bullets
+    : CwState -> List (Pt * Int) -> CwState
+    = fn s, bs -> mk_state (st_player s) (st_enemies s) bs (st_turn s) (st_cooldown s) (st_status s) end
+end
+
+let set_status
+    : CwState -> CwStatus -> CwState
+    = fn s, status -> mk_state (st_player s) (st_enemies s) (st_bullets s) (st_turn s) (st_cooldown s) status end
+end
+
+let set_clock
+    : CwState -> Int -> Int -> CwState
+    = fn s, t, cd -> mk_state (st_player s) (st_enemies s) (st_bullets s) t cd (st_status s) end
+end
+
+let init
+    : CwLevel -> CwState
+    = fn lv -> mk_state (lv_start lv) (lv_enemies lv) [] 0 0 CwStatus:Playing end
+end
+
+let status_is_playing
+    : CwStatus -> Bool
+    = match
+        CwStatus:Playing -> Bool:True end
+        _                -> Bool:False end
+    end
+end
+
+let is_playing
+    : CwState -> Bool
+    = comp status_is_playing st_status
+end
+
+let status_is_won
+    : CwStatus -> Bool
+    = match
+        CwStatus:Won -> Bool:True end
+        _            -> Bool:False end
+    end
+end
+
+let is_won
+    : CwState -> Bool
+    = comp status_is_won st_status
+end
+
+let status_cause
+    : CwStatus -> Maybe String
+    = match
+        CwStatus:Dead why -> Maybe:Val why end
+        _                 -> Maybe:Nil end
+    end
+end
+
+# why the player died, if they did
+let death_cause
+    : CwState -> Maybe String
+    = comp status_cause st_status
+end
+
+let kill_player
+    : CwState -> String -> CwState
+    = fn s, why -> set_status s (CwStatus:Dead why) end
+end
+
+# ======================================================================================
+# The map
+# ======================================================================================
+
+let tile_at
+    : CwLevel -> Pt -> Char
+    = fn lv, p ->
+        cond (or (ls (fst p) 0) (ls (rst p) 0)) '#'
+            (nth_or '#' (fst p) (nth_or [] (rst p) (lv_grid lv)))
+      end
+end
+
+let path_pos
+    : CwLevel -> Int -> Int -> Pt
+    = fn lv, pi, si -> nth_or (0 * 0) si (nth_or [] pi < lv_paths lv) end
+end
+
+let enemy_pos
+    : CwLevel -> CwEnemy -> Pt
+    = fn lv -> match
+        CwEnemy:EFollower p                -> p end
+        CwEnemy:EPatroller (pi * (si * _)) -> path_pos lv pi si end
+        CwEnemy:ETurret (p * _)            -> p end
+        CwEnemy:ERunner p                  -> p end
+        CwEnemy:ELeaper (p * _)            -> p end
+      end
+    end
+end
+
+let enemy_pts
+    : CwLevel -> CwState -> List Pt
+    = fn lv, st -> map (comp (enemy_pos lv) rst) (st_enemies st) end
+end
+
+# everything standing on the map that takes up room
+let entity_pts
+    : CwLevel -> CwState -> List Pt
+    = fn lv, st -> List:Cons (st_player st * enemy_pts lv st) end
+end
+
+let enemy_at
+    : CwLevel -> CwState -> Pt -> Maybe (Int * CwEnemy)
+    = fn lv, st, p -> Search:find (comp (comp (eq p) (enemy_pos lv)) rst) (st_enemies st) end
+end
+
+let plate_held
+    : CwLevel -> CwState -> Int -> Bool
+    = fn lv, st, g ->
+        Search:any (fn pg -> and (eq (rst pg) g) (Search:contains (fst pg) (entity_pts lv st)) end) (lv_plates lv)
+    end
+end
+
+# a gate with someone in it stays open
+let gate_open
+    : CwLevel -> CwState -> Pt -> Char -> Bool
+    = fn lv, st, p, c ->
+        or (Search:contains p < entity_pts lv st)
+          < cond (is_closed_gate c)
+                (plate_held lv st < gate_group c)
+                (not < plate_held lv st < gate_group c)
+    end
+end
+
+let blocked
+    : CwLevel -> CwState -> Pt -> Bool
+    = fn lv, st, p -> blocked_by lv st p < tile_at lv p end
+with blocked_by
+    : CwLevel -> CwState -> Pt -> Char -> Bool
+    = fn lv, st, p, c ->
+        or (eq c '#') (and (is_gate c) < not (gate_open lv st p c))
+    end
+end
+
+let free
+    : CwLevel -> CwState -> Pt -> Bool
+    = fn lv, st, p -> nor (blocked lv st p) (Search:contains p < entity_pts lv st) end
+end
+
+let line_span
+    : Pt -> Pt -> Int
+    = flip < fork (fork max) (over (comp2 abs sub) fst) (over (comp2 abs sub) rst)
+end
+
+# A straight line between two places with nothing blocking in between. The line is the
+# same whichever end it is drawn from.
+let line_clear
+    : CwLevel -> CwState -> Pt -> Pt -> Bool
+    = fn lv, st, a, b ->
+        cond (before b a) (flip < line_from lv st) (line_from lv st) a b
+    end
+with line_from
+    : CwLevel -> CwState -> Pt -> Pt -> Bool
+    = fn lv, st, a, b ->
+        Search:all (comp (comp not < blocked lv st) (line_point a b)) (range 1 < line_span a b)
+    end
+end
+
+# the ith place on the line from a to b
+let line_point
+    : Pt -> Pt -> Int -> Pt
+    = fn a, b, i ->
+        add (fst a) (rounded (sub (fst b) (fst a)) i (line_span a b)) *
+        add (rst a) (rounded (sub (rst b) (rst a)) i (line_span a b))
+    end
+with rounded # round ((2di + n)/ 2n)
+    : Int -> Int -> Int -> Int
+    = fn delta, i, n -> div (add (mul 2 (mul delta i)) n) (mul 2 n) end
+end
+
+# same row or column with a clear line between
+let cardinal_sight
+    : CwLevel -> CwState -> Pt -> Pt -> Bool
+    = fn lv, st ->
+        fork (fork and)
+            (fork (fork or) (over eq fst) (over eq rst))
+            (line_clear lv st)
+    end
+end
+
+# ======================================================================================
+# Enemies
+# ======================================================================================
+
+let enemy_name
+    : CwEnemy -> String
+    = match
+        CwEnemy:EFollower _  -> "follower" end
+        CwEnemy:EPatroller _ -> "patroller" end
+        CwEnemy:ETurret _    -> "turret" end
+        CwEnemy:ERunner _    -> "runner" end
+        CwEnemy:ELeaper _    -> "leaper" end
+    end
+end
+
+# every enemy but the runner attacks when you are next to it
+let attacks
+    : CwEnemy -> Bool
+    = match
+        CwEnemy:ERunner _ -> Bool:False end
+        _                 -> Bool:True end
+    end
+end
+
+let put_enemy
+    : CwState -> Int -> CwEnemy -> CwState
+    = fn st, id, e ->
+        set_enemies st (map (fn ie -> cond (eq (fst ie) id) (id * e) ie end) (st_enemies st))
+    end
+end
+
+let remove_enemy
+    : CwState -> Int -> CwState
+    = fn st, id -> set_enemies st (filter (comp (neq id) fst) (st_enemies st)) end
+end
+
+# spikes hurt
+let settle
+    : CwLevel -> CwState -> Int -> CwEnemy -> CwState
+    = fn lv, st, id, e ->
+        cond (eq '^' < tile_at lv < enemy_pos lv e) (remove_enemy st id) (put_enemy st id e)
+    end
+end
+
+# ---- bullets
+
+let bullet_at
+    : CwState -> Pt -> Bool
+    = fn st, p -> Search:any (comp (eq p) fst) (st_bullets st) end
+end
+
+let add_bullet
+    : CwState -> Pt -> Int -> CwState
+    = fn st, p, d -> set_bullets st (append (st_bullets st) [p * d]) end
+end
+
+# a bullet arriving at `p`: hits the player or an enemy there, or flies on
+let bullet_lands
+    : CwLevel -> CwState -> Pt -> Int -> CwState
+    = fn lv, st, p, d ->
+        cond (eq p < st_player st)
+            (kill_player st "Shot by a bullet")
+            (bullet_hits st p d < enemy_at lv st p)
+    end
+end
+
+let bullet_hits
+    : CwState -> Pt -> Int -> Maybe (Int * CwEnemy) -> CwState
+    = fn st, p, d -> match
+        Maybe:Val ie -> remove_enemy st (fst ie) end
+        Maybe:Nil    -> add_bullet st p d end
+    end end
+end
+
+let advance_bullet
+    : CwLevel -> CwState -> (Pt * Int) -> CwState
+    = fn lv, st, b ->
+        cond (or (not < is_playing st) (blocked lv st < add_pt_dir b)) st
+            (bullet_lands lv st (add_pt_dir b) (rst b))
+    end
+with add_pt_dir
+    : (Pt * Int) -> Pt
+    = fork add_pt fst rst
+end
+
+let move_bullets
+    : CwLevel -> CwState -> List (Pt * Int) -> CwState
+    = fn lv, st, bs -> foldl (advance_bullet lv) (set_bullets st []) bs end
+end
+
+# ---- one enemy's turn
+
+let act
+    : CwLevel -> CwState -> Int -> CwEnemy -> CwState
+    = fn lv, st, id, e ->
+        cond (and (attacks e) (adjacent (enemy_pos lv e) (st_player st)))
+            (kill_player st (append "Cut down by a " < enemy_name e))
+            (behave lv st id e)
+      end
+end
+
+let behave
+    : CwLevel -> CwState -> Int -> CwEnemy -> CwState
+    = fn lv, st, id -> match
+        CwEnemy:EFollower p                   -> follow lv st id p end
+        CwEnemy:EPatroller (pi * (si * d))    -> patrol lv st id pi si d end
+        CwEnemy:ETurret (p * (f * (per * t))) -> turret lv st id p f per t end
+        CwEnemy:ERunner p                     -> run_away lv st id p end
+        CwEnemy:ELeaper (p * (cd * tg))       -> leap lv st id p cd tg end
+    end end
+end
+
+let follow
+    : CwLevel -> CwState -> Int -> Pt -> CwState
+    = fn lv, st, id, p ->
+        cond (line_clear lv st p < st_player st)
+            (follow_try lv st id p < follow_dirs p < st_player st)
+            st
+    end
+end
+
+let follow_dirs
+    : Pt -> Pt -> List Int
+    = fn p, q ->
+        cond (gre (abs < sub (fst q) (fst p)) (abs < sub (rst q) (rst p)))
+            (append (toward_x < sub (fst q) (fst p)) (toward_y < sub (rst q) (rst p)))
+            (append (toward_y < sub (rst q) (rst p)) (toward_x < sub (fst q) (fst p)))
+      end
+with toward_x
+    : Int -> List Int
+    = fn delta ->
+        cond (gr delta 0) [1]
+      < cond (ls delta 0) [3] []
+    end
+with toward_y
+    : Int -> List Int
+    = fn delta ->
+        cond (gr delta 0) [2]
+      < cond (ls delta 0) [0] []
+    end
+with follow_try
+    : CwLevel -> CwState -> Int -> Pt -> List Int -> CwState
+    = match
+        _, st, _, _, []                   -> st end
+        lv, st, id, p, List:Cons (d * ds) ->
+            cond (free lv st < add_pt p d)
+                (settle lv st id < CwEnemy:EFollower < add_pt p d)
+                (follow_try lv st id p ds)
+        end
+    end
+end
+
+let patrol
+    : CwLevel -> CwState -> Int -> Int -> Int -> Int -> CwState
+    = fn lv, st, id, pi, si, d ->
+        patrol_to lv st id pi < patrol_next (len < nth_or [] pi < lv_paths lv) si d
+    end
+with patrol_next # (new place on the path, new direction)
+    : Int -> Int -> Int -> (Int * Int)
+    = fn n, si, d ->
+        cond (and (gre (add si d) 0) (ls (add si d) n))
+            (add si d * d)
+            (cond (gr n 1) (sub si d * neg d) (si * d))
+      end
+with patrol_to
+    : CwLevel -> CwState -> Int -> Int -> (Int * Int) -> CwState
+    = fn lv, st, id, pi, nxt ->
+        cond (free lv st < path_pos lv pi < fst nxt)
+            (settle lv st id < CwEnemy:EPatroller (pi * (fst nxt * rst nxt)))
+            st
+      end
+end
+
+let turret
+    : CwLevel -> CwState -> Int -> Pt -> Int -> Int -> Int -> CwState
+    = fn lv, st, id, p, f, per, t ->
+        cond (gr (pred t) 0)
+            (put_enemy st id < CwEnemy:ETurret (p * (f * (per * pred t))))
+            (fire lv (put_enemy st id < CwEnemy:ETurret (p * (f * (per * per)))) p f)
+    end
+with fire
+    : CwLevel -> CwState -> Pt -> Int -> CwState
+    = fn lv, st, p, f ->
+        cond (blocked lv st < add_pt p f) st (bullet_lands lv st (add_pt p f) f)
+    end
+end
+
+let run_away
+    : CwLevel -> CwState -> Int -> Pt -> CwState
+    = fn lv, st, id, p ->
+        run_from lv st id p < nearest p < List:Cons (st_player st * other_pts lv st id)
+    end
+with other_pts
+    : CwLevel -> CwState -> Int -> List Pt
+    = fn lv, st, i -> st_enemies st
+      > filter (comp (neq i) fst)
+      > map (comp (enemy_pos lv) rst)
+    end
+with nearest # the closest place in the list (the earliest of equals)
+    : Pt -> List Pt -> Pt
+    = fn p, qs -> foldl (fn best, q -> cond (ls (dist p q) (dist p best)) q best end) (first_of p qs) qs end
+with run_from
+    : CwLevel -> CwState -> Int -> Pt -> Pt -> CwState
+    = fn lv, st, id, p, threat ->
+        cond (ls (dist p threat) 3)
+            (run_try lv st id p < append (away_x < sub (fst threat) (fst p)) (away_y < sub (rst threat) (rst p)))
+            st
+      end
+with away_x
+    : Int -> List Int
+    = fn delta ->
+        cond (gr delta 0) [3]
+      < cond (ls delta 0) [1] []
+    end
+with away_y
+    : Int -> List Int
+    = fn delta ->
+        cond (gr delta 0) [0]
+      < cond (ls delta 0) [2] []
+    end
+with run_try
+    : CwLevel -> CwState -> Int -> Pt -> List Int -> CwState
+    = match
+        _, st, _, _, []                   -> st end
+        lv, st, id, p, List:Cons (d * ds) ->
+            cond (and (free lv st < add_pt p d) (neq (tile_at lv < add_pt p d) '^'))
+                (put_enemy st id < CwEnemy:ERunner < add_pt p d)
+                (run_try lv st id p ds)
+        end
+    end
+end
+
+let leap
+    : CwLevel -> CwState -> Int -> Pt -> Int -> Pt -> CwState
+    = fn lv, st, id, p, cd, tg ->
+        cond (gr cd 0)
+            (cond (eq cd 1)
+                (jump lv st id p tg)
+                (put_enemy st id < CwEnemy:ELeaper (p * (pred cd * tg)))
+            )
+            (cond (cardinal_sight lv st p < st_player st)
+                (put_enemy st id < CwEnemy:ELeaper (p * (2 * st_player st)))
+                st
+            )
+      end
+with jump
+    : CwLevel -> CwState -> Int -> Pt -> Pt -> CwState
+    = fn lv, st, i, p, tg ->
+        cond (eq tg < st_player st)
+            (kill_player st "Pounced on by a leaper")
+            (cond (or (blocked lv st tg) (Search:contains tg < entity_pts lv st))
+                (put_enemy st i < CwEnemy:ELeaper (p * (0 * p)))
+                (settle lv st i < CwEnemy:ELeaper (tg * (0 * tg)))
+            )
+      end
+end
+
+let act_by_id
+    : CwLevel -> CwState -> Int -> CwState
+    = fn lv, st, i ->
+        cond (is_playing st)
+            (act_found lv st i < Search:find (comp (eq i) fst) (st_enemies st))
+            st
+      end
+with act_found
+    : CwLevel -> CwState -> Int -> Maybe (Int * CwEnemy) -> CwState
+    = fn lv, st, id -> match
+        Maybe:Nil    -> st end
+        Maybe:Val ie -> act lv st id (rst ie) end
+    end end
+end
+
+# everything that happens after the player has moved
+let enemy_phase
+    : CwLevel -> CwState -> CwState
+    = fn lv, st ->
+        st_enemies st
+      > map fst
+      > foldl (act_by_id lv) (move_bullets lv st < st_bullets st)
+    end
+end
+
+# ======================================================================================
+# The player's turn
+# ======================================================================================
+
+# the clock moves on: one more turn, and the dash cooldown ticks (or starts)
+let tick
+    : CwState -> Bool -> CwState
+    = fn st, dashed -> set_clock st (succ < st_turn st) < cond dashed 1 < max 0 < pred < st_cooldown st end
+end
+
+let finish_turn
+    : CwLevel -> CwState -> Bool -> CwState
+    = fn lv, st, dashed -> tick (enemy_phase lv st) dashed end
+end
+
+# the player ends up at `t`
+let arrive
+    : CwLevel -> CwState -> Pt -> Bool -> CwState
+    = fn lv, st, t, dashed -> arrive_at lv (set_player st t) t dashed end
+with arrive_at
+    : CwLevel -> CwState -> Pt -> Bool -> CwState
+    = fn lv, st, t, dashed ->
+        cond (eq '^' < tile_at lv t)
+            (tick (kill_player st "Impaled on spikes") dashed)
+      < cond (bullet_at st t)
+            (tick (kill_player st "Shot by a bullet") dashed)
+      < cond (eq (tile_at lv t) 'X')
+            (tick (set_status st CwStatus:Won) dashed)
+            (finish_turn lv st dashed)
+    end
+end
+
+let move
+    : CwLevel -> CwState -> Int -> Maybe CwState
+    = fn lv, st, d ->
+        cond (free lv st < add_pt (st_player st) d)
+            (Maybe:Val < arrive lv st (add_pt (st_player st) d) Bool:False)
+            Maybe:Nil
+    end
+end
+
+let dash
+    : CwLevel -> CwState -> Int -> Maybe CwState
+    = fn lv, st, d ->
+        cond (or (gr (st_cooldown st) 0) (not (free lv st (add_pt (st_player st) d))))
+            Maybe:Nil
+            (Maybe:Val < arrive lv st (dash_landing lv st d) Bool:True)
+    end
+with dash_landing
+    : CwLevel -> CwState -> Int -> Pt
+    = fn lv, st, d ->
+        cond (free lv st (add_pt (add_pt (st_player st) d) d))
+            (add_pt (add_pt (st_player st) d) d)
+            (add_pt (st_player st) d)
+    end
+end
+
+# Do an action. `Nil` means it cannot be done (into a wall, dash recharging, ...), and then
+# no turn passes.
+let play
+    : CwLevel -> CwState -> CwAction -> Maybe CwState
+    = fn lv, st, a ->
+        cond (is_playing st) (do_action lv st a) Maybe:Nil
+    end
+with do_action
+    : CwLevel -> CwState -> CwAction -> Maybe CwState
+    = fn lv, st -> match
+        CwAction:AWait   -> Maybe:Val (finish_turn lv st Bool:False) end
+        CwAction:AMove d -> move lv st d end
+        CwAction:ADash d -> dash lv st d end
+    end end
+end
+
+# ======================================================================================
+# For the solver: a compact text of everything that matters
+# ======================================================================================
+
+let enemy_key
+    : (Int * CwEnemy) -> String
+    = fn ie -> append (show < fst ie) < append ":" < enemy_fields < rst ie end
+end
+
+let enemy_fields
+    : CwEnemy -> String
+    = match
+        CwEnemy:EFollower p                   -> Str:join "," < map show [fst p, rst p] end
+        CwEnemy:EPatroller (pi * (si * d))    -> Str:join "," < map show [pi, si, d] end
+        CwEnemy:ETurret (p * (f * (per * t))) -> Str:join "," < map show [fst p, rst p, f, per, t] end
+        CwEnemy:ERunner p                     -> Str:join "," < map show [fst p, rst p] end
+        CwEnemy:ELeaper (p * (cd * tg))       -> Str:join "," < map show [fst p, rst p, cd, fst tg, rst tg] end
+    end
+end
+
+# The position as text; two states with the same text play out the same
+let state_key
+    : CwState -> String
+    = fn st ->
+        Str:join "|" [
+            Str:join "," < map show [fst < st_player st, rst < st_player st, st_cooldown st],
+            Str:join ";" < map enemy_key < st_enemies st,
+            Str:join ";" < map (fn b -> Str:join "," < map show [fst < fst b, rst < fst b, rst b] end) (st_bullets st)
+        ]
+    end
+end
