@@ -54,19 +54,19 @@ end
 
 let sleep
     : Float -> IO Unit
-    = fn seconds -> prim_sleep (float_to_int (mul seconds 1000.0)) end
+    = comp prim_sleep (comp float_to_int < mul 1000.0)
 end
 
 # Runs an action and also returns how many seconds it took.
 let measure a
     : IO a -> IO (a * Float)
-    = fn action ->
-        bind (fn t0 ->
-            bind (fn result ->
-                bind (fn t1 -> return (result * sub t1 t0) end) monotonic
-            end) action
-        end) monotonic
-      end
+    = fn action -> monotonic >
+        bind < fn t0 -> action >
+            bind < fn result -> monotonic >
+                bind < fn t1 -> return (result * sub t1 t0) end
+            end
+        end
+    end
 end
 
 # ---- calendar ----
@@ -82,44 +82,32 @@ end
 
 let year
     : DateTime -> Int
-    = match
-        (y * _) -> y end
-    end
+    = fst
 end
 
 let month
     : DateTime -> Int
-    = match
-        (_ * (mo * _)) -> mo end
-    end
+    = comp fst rst
 end
 
 let day
     : DateTime -> Int
-    = match
-        (_ * (_ * (d * _))) -> d end
-    end
+    = comp (comp fst rst) rst
 end
 
 let hour
     : DateTime -> Int
-    = match
-        (_ * (_ * (_ * (h * _)))) -> h end
-    end
+    = comp (comp (comp fst rst) rst) rst
 end
 
 let minute
     : DateTime -> Int
-    = match
-        (_ * (_ * (_ * (_ * (mi * _))))) -> mi end
-    end
+    = comp (comp (comp (comp fst rst) rst) rst) rst
 end
 
 let second
     : DateTime -> Int
-    = match
-        (_ * (_ * (_ * (_ * (_ * s))))) -> s end
-    end
+    = comp (comp (comp (comp rst rst) rst) rst) rst
 end
 
 let is_leap_year
@@ -133,7 +121,7 @@ let days_in_month
         cond (eq m 2)
             (cond (is_leap_year y) 29 28)
             (cond (or (or (eq m 4) (eq m 6)) (or (eq m 9) (eq m 11))) 30 31)
-      end
+    end
 end
 
 # Days since 1970-01-01 of a civil date (Howard Hinnant's algorithm; exact for any year).
@@ -141,22 +129,21 @@ let days_from_civil
     : Int -> Int -> Int -> Int
     = fn y0, m, d ->
         days_from_civil_era (div (cond (lse m 2) (sub y0 1) y0) 400) (cond (lse m 2) (sub y0 1) y0) m d
-      end
+    end
 end
 
 let days_from_civil_era
     : Int -> Int -> Int -> Int -> Int
-    = fn era, y, m, d ->
-        days_from_civil_doe era (sub y (mul era 400))
-            (add (div (add (mul 153 (cond (gr m 2) (sub m 3) (add m 9))) 2) 5) (sub d 1))
-      end
+    = fn era, y, m, d -> days_from_civil_doe era (sub y < mul era 400)
+        < add (pred d) < div (add 2 < mul 153 < cond (gr m 2) (sub m 3) (add m 9)) 5
+    end
 end
 
 let days_from_civil_doe
     : Int -> Int -> Int -> Int
     = fn era, yoe, doy ->
-        sub (add (mul era 146097) (sub (add (add (mul yoe 365) (div yoe 4)) doy) (div yoe 100))) 719468
-      end
+        sub (add (mul era 146097) (sub (add doy < add (mul yoe 365) < div yoe 4) < div yoe 100)) 719468
+    end
 end
 
 # The civil date of a day count since 1970-01-01: (year, month, day).
@@ -167,63 +154,57 @@ end
 
 let civil_era
     : Int -> Int -> (Int * (Int * Int))
-    = fn era, z -> civil_doe era (sub z (mul era 146097)) end
+    = fn era, z -> civil_doe era (sub z < mul era 146097) end
 end
 
 let civil_doe
     : Int -> Int -> (Int * (Int * Int))
     = fn era, doe ->
         civil_yoe era doe
-            (div (sub (add (sub doe (div doe 1460)) (div doe 36524)) (div doe 146096)) 365)
-      end
+            (div (sub (add (sub doe < div doe 1460) < div doe 36524) < div doe 146096) 365)
+    end
 end
 
 let civil_yoe
     : Int -> Int -> Int -> (Int * (Int * Int))
     = fn era, doe, yoe ->
-        civil_final (add yoe (mul era 400))
-            (sub doe (sub (add (mul 365 yoe) (div yoe 4)) (div yoe 100)))
-      end
+        civil_final (add yoe (mul era 400)) < sub doe < sub (add (mul 365 yoe) < div yoe 4) < div yoe 100
+    end
 end
 
 let civil_final
     : Int -> Int -> (Int * (Int * Int))
     = fn y, doy ->
-        civil_pack y (div (add (mul 5 doy) 2) 153) doy
-      end
+        civil_pack y (div (add 2 < mul 5 doy) 153) doy
+    end
 end
 
 let civil_pack
     : Int -> Int -> Int -> (Int * (Int * Int))
     = fn y, mp, doy ->
-        civil_done y (cond (ls mp 10) (add mp 3) (sub mp 9)) (add (sub doy (div (add (mul 153 mp) 2) 5)) 1)
-      end
+        civil_done y (cond (ls mp 10) (add mp 3) (sub mp 9)) (succ < sub doy < div (add 2 < mul 153 mp) 5)
+    end
 end
 
 let civil_done
     : Int -> Int -> Int -> (Int * (Int * Int))
-    = fn y, m, d -> (cond (lse m 2) (add y 1) y * (m * d)) end
+    = fn y, m, d -> (cond (lse m 2) (succ y) y * (m * d)) end
 end
 
 # Floors toward negative infinity (float_to_int truncates toward zero).
 let floor_int
     : Float -> Int
     = fn x ->
-        cond (ls x (int_to_float (float_to_int x)))
-            (sub (float_to_int x) 1)
+        cond (ls x < int_to_float < float_to_int x)
+            (pred < float_to_int x)
             (float_to_int x)
-      end
+    end
 end
 
 # The UTC date and time of seconds since 1970 (fractions are dropped).
 let from_unix
     : Float -> DateTime
-    = fn t -> from_days_secs (floor_int (div_f t 86400.0)) (sub_secs t (floor_int (div_f t 86400.0))) end
-end
-
-let div_f
-    : Float -> Float -> Float
-    = fn a, b -> div a b end
+    = fn t -> from_days_secs (floor_int < div t 86400.0) (sub_secs t < floor_int < div t 86400.0) end
 end
 
 let sub_secs
@@ -235,7 +216,7 @@ let from_days_secs
     : Int -> Int -> DateTime
     = fn days, secs ->
         build_date (civil_from_days days) (div secs 3600) (div (mod secs 3600) 60) (mod secs 60)
-      end
+    end
 end
 
 let build_date
@@ -251,24 +232,24 @@ let to_unix
     = fn dt ->
         add (mul (int_to_float (days_from_civil (year dt) (month dt) (day dt))) 86400.0)
             (int_to_float (add (add (mul (hour dt) 3600) (mul (minute dt) 60)) (second dt)))
-      end
+    end
 end
 
 # 0 = Sunday ... 6 = Saturday
 let weekday
     : DateTime -> Int
-    = fn dt -> mod (add 4 (days_from_civil (year dt) (month dt) (day dt))) 7 end
+    = fn dt -> mod (add 4 < days_from_civil (year dt) (month dt) (day dt)) 7 end
 end
 
 # 1-366
 let day_of_year
     : DateTime -> Int
-    = fn dt -> add (sub (days_from_civil (year dt) (month dt) (day dt)) (days_from_civil (year dt) 1 1)) 1 end
+    = fn dt -> succ < sub (days_from_civil (year dt) (month dt) (day dt)) (days_from_civil (year dt) 1 1) end
 end
 
 let add_seconds
     : Float -> DateTime -> DateTime
-    = fn s, dt -> from_unix (add (to_unix dt) s) end
+    = fork2 from_unix add to_unix
 end
 
 # The local time zone's offset from UTC, in seconds east, at a moment in time.
@@ -280,9 +261,9 @@ end
 # The current local date and time.
 let now_local
     : IO DateTime
-    = bind (fn t ->
-        bind (fn off -> return (from_unix (add t (int_to_float off))) end) (local_offset t)
-      end) now
+    = now > bind < fn t -> local_offset t >
+        bind < comp return < comp from_unix < comp (add t) int_to_float
+    end
 end
 
 # ---- formatting ----
@@ -302,7 +283,7 @@ end
 # name, %b/%B short/full month name, %F is %Y-%m-%d, %T is %H:%M:%S, %% is a percent sign.
 let format
     : String -> DateTime -> String
-    = fn pattern, dt -> format_go pattern dt end
+    = format_go
 end
 
 let format_go
@@ -316,25 +297,25 @@ end
 
 let pad2
     : Int -> String
-    = fn n -> Str:pad_left 2 '0' (show n) end
+    = comp (Str:pad_left 2 '0') show
 end
 
 let field
     : Char -> DateTime -> String
     = match
-        'Y', dt -> show (year dt) end
-        'y', dt -> pad2 (mod (year dt) 100) end
-        'm', dt -> pad2 (month dt) end
-        'd', dt -> pad2 (day dt) end
-        'e', dt -> Str:pad_left 2 ' ' (show (day dt)) end
-        'H', dt -> pad2 (hour dt) end
-        'M', dt -> pad2 (minute dt) end
-        'S', dt -> pad2 (second dt) end
-        'j', dt -> Str:pad_left 3 '0' (show (day_of_year dt)) end
-        'A', dt -> Time:name_at weekday_names (weekday dt) end
-        'a', dt -> take 3 (Time:name_at weekday_names (weekday dt)) end
-        'B', dt -> Time:name_at month_names (sub (month dt) 1) end
-        'b', dt -> take 3 (Time:name_at month_names (sub (month dt) 1)) end
+        'Y', dt -> show < year dt end
+        'y', dt -> pad2 < mod (year dt) 100 end
+        'm', dt -> pad2 < month dt end
+        'd', dt -> pad2 < day dt end
+        'e', dt -> Str:pad_left 2 ' ' < show < day dt end
+        'H', dt -> pad2 < hour dt end
+        'M', dt -> pad2 < minute dt end
+        'S', dt -> pad2 < second dt end
+        'j', dt -> Str:pad_left 3 '0' < show < day_of_year dt end
+        'A', dt -> Time:name_at weekday_names < weekday dt end
+        'a', dt -> take 3 < Time:name_at weekday_names < weekday dt end
+        'B', dt -> Time:name_at month_names < pred month dt end
+        'b', dt -> take 3 < Time:name_at month_names < pred < month dt end
         'F', dt -> Time:format "%Y-%m-%d" dt end
         'T', dt -> Time:format "%H:%M:%S" dt end
         '%', _  -> "%" end
@@ -344,7 +325,7 @@ end
 
 let name_at
     : List String -> Int -> String
-    = fn names, i -> cond (eq i 0) (nth_head names) (name_at (tail_or_nil names) (sub i 1)) end
+    = fn names, i -> cond (eq i 0) (nth_head names) (name_at (tail_or_nil names) (pred i)) end
 end
 
 let nth_head

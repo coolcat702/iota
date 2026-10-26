@@ -28,7 +28,7 @@ end
 
 let seed
     : Int -> Gen
-    = fn n -> Gen:G n end
+    = Gen:G
 end
 
 # A generator seeded from the operating system.
@@ -48,36 +48,36 @@ end
 # The next raw 32-bit value (any Int, positive or negative) and the next generator.
 let next
     : Gen -> (Int * Gen)
-    = fn g -> next_from (add (state g) 1831565813) end
+    = comp next_from (comp (add 1831565813) state)
 end
 
 let next_from
     : Int -> (Int * Gen)
-    = fn s -> (mulberry s * Gen:G s) end
+    = fork pair mulberry Gen:G
 end
 
 let mulberry
     : Int -> Int
     = fn s ->
-        mb3 (bit_xor s (shift_right s 15)) (bit_or s 1) s
-      end
+        mb3 (bit_xor s < shift_right s 15) (bit_or s 1) s
+    end
 end
 
 let mb3
     : Int -> Int -> Int -> Int
-    = fn x, y, s -> mb4 (mul x y) s end
+    = comp2 mb4 mul
 end
 
 let mb4
     : Int -> Int -> Int
     = fn t, s ->
         mb5 (bit_xor t (add t (mul (bit_xor t (shift_right t 7)) (bit_or t 61))))
-      end
+    end
 end
 
 let mb5
     : Int -> Int
-    = fn t -> bit_xor t (shift_right t 14) end
+    = join < comp bit_xor < flip shift_right 14
 end
 
 # A whole number in [lo, hi): `int_range 1 7 g` is a die roll. (hi must be above lo.)
@@ -94,7 +94,7 @@ end
 # A Float in [0, 1).
 let float
     : Gen -> (Float * Gen)
-    = fn g -> to_unit (next g) end
+    = comp to_unit next
 end
 
 let to_unit
@@ -104,7 +104,7 @@ end
 
 let bool
     : Gen -> (Bool * Gen)
-    = fn g -> bit_of (next g) end
+    = comp bit_of next
 end
 
 let bit_of
@@ -115,7 +115,7 @@ end
 # Two independent generators from one.
 let split
     : Gen -> (Gen * Gen)
-    = fn g -> split_from (next g) end
+    = comp split_from next
 end
 
 let split_from
@@ -130,7 +130,7 @@ let choose a
         cond (eq (len xs) 0)
             (Maybe:Nil * g)
             (pick_at xs (int_range 0 (len xs) g))
-      end
+    end
 end
 
 let pick_at a
@@ -149,7 +149,7 @@ end
 # A uniformly shuffled copy of the list.
 let shuffle a
     : List a -> Gen -> (List a * Gen)
-    = fn xs, g -> shuffled (zip_keys xs g) end
+    = comp2 shuffled zip_keys
 end
 
 # pairs every element with a random key and returns the final generator too

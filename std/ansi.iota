@@ -43,13 +43,13 @@ end
 let sgr
     : List Int -> String -> String
     = fn codes, text ->
-        join3 (csi (append (Str:join ";" (map show codes)) "m")) text (csi "0m")
-      end
+        join3 (csi (append (Str:join ";" < map show codes) "m")) text (csi "0m")
+    end
 end
 
 let join3
     : String -> String -> String -> String
-    = fn a, b, c -> append a (append b c) end
+    = comp2 append append
 end
 
 # ---- colors ----
@@ -184,7 +184,7 @@ end
 
 let move_to
     : Int -> Int -> String
-    = fn row, col -> csi (append (show row) (append ";" (append (show col) "H"))) end
+    = fn row, col -> csi < append (show row) (append (append ";" < show col) "H") end
 end
 
 let up

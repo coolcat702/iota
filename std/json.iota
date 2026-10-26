@@ -194,8 +194,7 @@ let finish
     = fn total -> match
         Either:Left (msg * left)  -> Either:Left (error_text msg (sub total left)) end
         Either:Right (v * rest)   -> trailing total v (skip_ws rest) end
-      end
-    end
+    end end
 end
 
 let trailing
@@ -261,7 +260,7 @@ let literal
         cond (Str:starts_with word whole)
             (Either:Right (value * drop (len word) whole))
             (err "invalid literal" whole)
-      end
+    end
 end
 
 # -- arrays (after the "[" and white space)
@@ -276,7 +275,7 @@ end
 
 let array_items
     : List Json -> String -> Parsed
-    = fn acc, s -> after_item acc (parse_value s) end
+    = flip < comp (flip after_item) parse_value
 end
 
 let after_item
@@ -284,8 +283,7 @@ let after_item
     = fn acc -> match
         Either:Left e           -> Either:Left e end
         Either:Right (v * rest) -> array_sep (List:Cons (v * acc)) (skip_ws rest) end
-      end
-    end
+    end end
 end
 
 let array_sep
@@ -319,15 +317,14 @@ let after_key
     : List (String * Json) -> StrParsed -> Parsed
     = fn acc -> match
         Either:Left e            -> Either:Left e end
-        Either:Right (k * rest)  -> colon acc k (skip_ws rest) end
-      end
-    end
+        Either:Right (k * rest)  -> colon acc k < skip_ws rest end
+    end end
 end
 
 let colon
     : List (String * Json) -> String -> String -> Parsed
     = match
-        acc, k, List:Cons (':' * r) -> after_member acc k (parse_value (skip_ws r)) end
+        acc, k, List:Cons (':' * r) -> after_member acc k (parse_value < skip_ws r) end
         _, _, s                     -> err "expected ':'" s end
     end
 end
@@ -344,7 +341,7 @@ end
 let object_sep
     : List (String * Json) -> String -> Parsed
     = match
-        acc, List:Cons (',' * r) -> object_members acc (skip_ws r) end
+        acc, List:Cons (',' * r) -> object_members acc < skip_ws r end
         acc, List:Cons ('}' * r) -> Either:Right (Json:JObj (reverse acc) * r) end
         _, s                     -> err "expected ',' or '}'" s end
     end
@@ -354,7 +351,7 @@ end
 
 let parse_string
     : String -> StrParsed
-    = fn s -> string_loop [] s end
+    = string_loop [] end
 end
 
 # `acc` holds the characters read so far, last one first
@@ -393,10 +390,10 @@ end
 let hex4
     : String -> Int
     = fn s ->
-        cond (and (eq (len (take 4 s)) 4) (all_hex (take 4 s)))
-            (foldl (fn a, c -> add (mul a 16) (hex_digit c) end) 0 (take 4 s))
+        cond (and (eq (len < take 4 s) 4) (all_hex < take 4 s))
+            (foldl (fork2 add (mul 16) hex_digit c) 0 (take 4 s))
             -1
-      end
+    end
 end
 
 let all_hex
@@ -427,13 +424,11 @@ end
 let unicode_unit
     : String -> Int -> String -> String -> StrParsed
     = fn acc, hi, rest, whole ->
-        cond (ls hi 0)
-            (err "invalid \\u escape" whole)
-            (cond (and (gre hi 55296) (lse hi 56319))
-                (surrogate_pair acc hi rest)
-                (cond (and (gre hi 56320) (lse hi 57343))
-                    (string_loop (List:Cons (chr 65533 * acc)) rest)
-                    (string_loop (List:Cons (chr hi * acc)) rest)))
+        cond (ls hi 0) (err "invalid \\u escape" whole)
+      < cond (and (gre hi 55296) (lse hi 56319)) (surrogate_pair acc hi rest)
+      < cond (and (gre hi 56320) (lse hi 57343))
+            (string_loop (List:Cons (chr 65533 * acc)) rest)
+            (string_loop (List:Cons (chr hi * acc)) rest)
       end
 end
 
@@ -451,7 +446,7 @@ let combine
         cond (and (gre lo 56320) (lse lo 57343))
             (string_loop (List:Cons (chr (add 65536 (add (mul (sub hi 55296) 1024) (sub lo 56320))) * acc)) rest)
             (string_loop (List:Cons (chr 65533 * acc)) rest)
-      end
+    end
 end
 
 # -- numbers: -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
@@ -459,26 +454,25 @@ end
 let parse_number
     : String -> Parsed
     = fn s ->
-        cond (Str:starts_with "-" s) (number_ints Bool:True (drop 1 s)) (number_ints Bool:False s)
-      end
+        cond (Str:starts_with "-" s) (number_ints Bool:True < drop 1 s) (number_ints Bool:False s)
+    end
 end
 
 let number_ints
     : Bool -> String -> Parsed
-    = fn neg, s ->
-        number_check_ints neg (take_while Str:is_digit s) (Str:drop_while Str:is_digit s) s
-      end
+    = fn negative, s ->
+        number_check_ints negative (take_while Str:is_digit s) (Str:drop_while Str:is_digit s) s
+    end
 end
 
 let number_check_ints
     : Bool -> String -> String -> String -> Parsed
     = fn neg, ints, rest, whole ->
-        cond (Str:is_empty ints)
-            (err "invalid number" whole)
-            (cond (and (gr (len ints) 1) (eq (take 1 ints) "0"))
-                (err "numbers cannot have leading zeros" whole)
-                (number_frac neg ints rest))
-      end
+        cond (Str:is_empty ints) (err "invalid number" whole)
+      < cond (and (gr (len ints) 1) (eq (take 1 ints) "0"))
+            (err "numbers cannot have leading zeros" whole)
+            (number_frac neg ints rest)
+    end
 end
 
 let number_frac
@@ -495,7 +489,7 @@ let number_frac_digits
     : Bool -> String -> String -> String -> String -> Parsed
     = fn neg, ints, fs, rest, whole ->
         cond (Str:is_empty fs) (err "expected digits after the decimal point" whole) (number_exp neg ints fs rest)
-      end
+    end
 end
 
 let number_exp
@@ -504,7 +498,7 @@ let number_exp
         neg, ints, fs, List:Cons (c * r) ->
             cond (or (eq c 'e') (eq c 'E'))
                 (exp_sign neg ints fs r)
-                (number_done neg ints fs 0 (List:Cons (c * r)))
+                (number_done neg ints fs 0 < List:Cons (c * r))
         end
         neg, ints, fs, [] -> number_done neg ints fs 0 [] end
     end
@@ -524,15 +518,15 @@ let exp_digits
     = fn neg, ints, fs, eneg, r ->
         cond (Str:is_empty (take_while Str:is_digit r))
             (err "expected digits in the exponent" r)
-            (number_done neg ints fs
-                (signed eneg (digits_value (take_while Str:is_digit r)))
-                (Str:drop_while Str:is_digit r))
+          < number_done neg ints fs
+                (signed eneg < digits_value < take_while Str:is_digit r)
+                (Str:drop_while Str:is_digit r)
       end
 end
 
 let signed
     : Bool -> Int -> Int
-    = fn neg, n -> cond neg (sub 0 n) n end
+    = fn negative -> cond negative neg id end
 end
 
 # an enormous exponent is clamped (the result is then 0 or infinity anyway)
@@ -544,8 +538,8 @@ end
 let number_done
     : Bool -> String -> String -> Int -> String -> Parsed
     = fn neg, ints, fs, e, rest ->
-        Either:Right (Json:JNum (make_float neg (append ints fs) (sub e (len fs))) * rest)
-      end
+        Either:Right (Json:JNum (make_float neg (append ints fs) (sub e < len fs)) * rest)
+    end
 end
 
 # digits (as one whole number) times 10^scale
@@ -553,17 +547,12 @@ let make_float
     : Bool -> String -> Int -> Float
     = fn neg, digits, scale ->
         negate_if neg (scale_by (foldl (fn a, c -> add (mul a 10.0) (int_to_float (sub (ord c) 48)) end) 0.0 digits) scale)
-      end
+    end
 end
 
 let scale_by
     : Float -> Int -> Float
-    = fn m, k -> cond (gre k 0) (mul m (pow10 (min_int k 400))) (div m (pow10 (min_int (sub 0 k) 400))) end
-end
-
-let min_int
-    : Int -> Int -> Int
-    = fn a, b -> cond (ls a b) a b end
+    = fn m, k -> cond (gre k 0) (mul m < pow10 < min k 400) (div m < pow10 < min_int (neg k) 400) end
 end
 
 let pow10
@@ -573,7 +562,7 @@ end
 
 let negate_if
     : Bool -> Float -> Float
-    = fn neg, f -> cond neg (sub 0.0 f) f end
+    = fn negative -> cond negative neg id end
 end
 
 # ---- writing ----
@@ -586,56 +575,48 @@ let stringify
         Json:JBool b  -> cond b "true" "false" end
         Json:JNum f   -> number_text f end
         Json:JStr s   -> quote s end
-        Json:JArr xs  -> append "[" (append (Str:join "," (map stringify xs)) "]") end
-        Json:JObj ms  -> append "{" (append (Str:join "," (map member ms)) "}") end
+        Json:JArr xs  -> append "[" < append (Str:join "," < map stringify xs) "]" end
+        Json:JObj ms  -> append "{" < append (Str:join "," < map member ms) "}" end
     end
 end
 
 let member
     : (String * Json) -> String
-    = fn kv -> append (quote (fst kv)) (append ":" (stringify (rst kv))) end
+    = fn kv -> append (quote < fst kv) < append ":" < stringify < rst kv end
 end
 
 # Indented text: two spaces per level, one array element or member per line.
 let pretty
     : Json -> String
-    = fn j -> pretty_at 0 j end
+    = pretty_at 0
 end
 
 let pretty_at
     : Int -> Json -> String
     = match
-        n, Json:JArr xs -> cond (is_empty_list xs) "[]" (pretty_array n xs) end
-        n, Json:JObj ms -> cond (is_empty_list ms) "{}" (pretty_object n ms) end
+        n, Json:JArr xs -> cond (is_default xs) "[]" (pretty_array n xs) end
+        n, Json:JObj ms -> cond (is_default ms) "{}" (pretty_object n ms) end
         _, j            -> stringify j end
-    end
-end
-
-let is_empty_list a
-    : List a -> Bool
-    = match
-        [] -> Bool:True end
-        _  -> Bool:False end
     end
 end
 
 let indent
     : Int -> String
-    = fn n -> Str:repeat n "  " end
+    = flip Str:repeat "  "
 end
 
 let pretty_array
     : Int -> List Json -> String
     = fn n, xs ->
-        join3 "[\n" (Str:join ",\n" (map (fn x -> append (indent (add n 1)) (pretty_at (add n 1) x) end) xs)) (append "\n" (append (indent n) "]"))
-      end
+        join3 "[\n" (Str:join ",\n" (map (comp (append < indent < succ n) (pretty_at < succ n)) xs)) (append "\n" (append (indent n) "]"))
+    end
 end
 
 let pretty_object
     : Int -> List (String * Json) -> String
     = fn n, ms ->
-        join3 "{\n" (Str:join ",\n" (map (fn kv -> append (indent (add n 1)) (append (quote (fst kv)) (append ": " (pretty_at (add n 1) (rst kv)))) end) ms)) (append "\n" (append (indent n) "}"))
-      end
+        join3 "{\n" (Str:join ",\n" (map (fn kv -> append (indent < succ n) (append (quote < fst kv) (append ": " (pretty_at (succ n) (rst kv)))) end) ms)) (append "\n" (append (indent n) "}"))
+    end
 end
 
 let join3
@@ -646,9 +627,7 @@ end
 # JSON has no NaN or infinity; they are written as null
 let number_text
     : Float -> String
-    = fn f ->
-        number_text_of (float_repr f)
-      end
+    = comp number_text_of float_repr
 end
 
 let number_text_of
@@ -665,15 +644,14 @@ let quote_char
     : Char -> String
     = fn c ->
         cond (eq c '"') "\\\""
-        (cond (eq c '\\') "\\\\"
-        (cond (eq c '\n') "\\n"
-        (cond (eq c '\r') "\\r"
-        (cond (eq c '\t') "\\t"
-        (cond (eq (ord c) 8) "\\b"
-        (cond (eq (ord c) 12) "\\f"
-        (cond (ls (ord c) 32) (append "\\u" (Str:pad_left 4 '0' (hex_text (ord c))))
-        [c])))))))
-      end
+      < cond (eq c '\\') "\\\\"
+      < cond (eq c '\n') "\\n"
+      < cond (eq c '\r') "\\r"
+      < cond (eq c '\t') "\\t"
+      < cond (eq (ord c) 8) "\\b"
+      < cond (eq (ord c) 12) "\\f"
+      < cond (ls (ord c) 32) (append "\\u" < Str:pad_left 4 '0' < hex_text < ord c) [c]
+    end
 end
 
 let hex_text
@@ -682,7 +660,7 @@ let hex_text
         cond (ls n 16)
             [hex_char n]
             (append (hex_text (div n 16)) [hex_char (mod n 16)])
-      end
+    end
 end
 
 let hex_char
@@ -731,7 +709,7 @@ instance Eqable Json is
     end
     let neq
         : Json -> Json -> Bool
-        = fn a, b -> not (Json:equal a b) end
+        = comp not Json:equal end
     end
 end
 

@@ -66,8 +66,7 @@ let get (k : Hashable, Eqable) v
     : k -> HashMap k v -> Maybe v
     = fn key -> match
         HashMap:HM (_ * root) -> get_node 0 (hash key) key root end
-      end
-    end
+    end end
 end
 
 let get_or (k : Hashable, Eqable) v
@@ -84,15 +83,15 @@ end
 
 let insert (k : Hashable, Eqable) v
     : k -> v -> HashMap k v -> HashMap k v
-    = fn key, value -> alter key (const (Maybe:Val value)) end
+    = fn key, value -> alter key < const < Maybe:Val value end
 end
 
 # `insert_with f key value m`: if the key is present its value becomes `f value old`
 let insert_with (k : Hashable, Eqable) v
     : (v -> v -> v) -> k -> v -> HashMap k v -> HashMap k v
     = fn f, key, value ->
-        alter key (fn old -> Maybe:Val (maybe_fold value (f value) old) end)
-      end
+        alter key (comp Maybe:Val < maybe_fold value < f value)
+    end
 end
 
 let remove (k : Hashable, Eqable) v
@@ -112,16 +111,14 @@ let alter (k : Hashable, Eqable) v
     : k -> (Maybe v -> Maybe v) -> HashMap k v -> HashMap k v
     = fn key, f -> match
         HashMap:HM (n * root) -> rebuild_map n (alter_node 0 (hash key) key f root) end
-      end
-    end
+    end end
 end
 
 let rebuild_map k v
     : Int -> (HNode k v * Int) -> HashMap k v
     = fn n -> match
         (root * delta) -> HashMap:HM (add n delta * root) end
-      end
-    end
+    end end
 end
 
 # ---- whole-map operations ----
@@ -131,8 +128,7 @@ let fold k v b
     : (b -> k -> v -> b) -> b -> HashMap k v -> b
     = fn f, acc -> match
         HashMap:HM (_ * root) -> fold_node f acc root end
-      end
-    end
+    end end
 end
 
 let to_list k v
@@ -154,8 +150,7 @@ let map_values k v w
     : (v -> w) -> HashMap k v -> HashMap k w
     = fn f -> match
         HashMap:HM (n * root) -> HashMap:HM (n * map_node f root) end
-      end
-    end
+    end end
 end
 
 # Keeps the entries for which `p key value` holds.
@@ -167,14 +162,14 @@ end
 # Every entry of both maps; on a shared key the right-hand map's value wins.
 let union (k : Hashable, Eqable) v
     : HashMap k v -> HashMap k v -> HashMap k v
-    = union_with (fn old, new -> new end)
+    = union_with (flip const)
 end
 
 # `union_with f a b`: on a shared key the value is `f (a's value) (b's value)`.
 let union_with (k : Hashable, Eqable) v
     : (v -> v -> v) -> HashMap k v -> HashMap k v -> HashMap k v
     = fn f, a, b ->
-        fold (fn acc, key, value -> insert_with (fn new, old -> f old new end) key value acc end) a b
+        fold (fn acc, key, value -> insert_with (flip f) key value acc end) a b
       end
 end
 
@@ -191,7 +186,7 @@ end
 # which of the four children a hash selects at a depth
 let slot
     : Int -> Int -> Int
-    = fn h, d -> bit_and (shift_right h (mul 2 d)) 3 end
+    = fn h, d -> bit_and (shift_right h < mul 2 d) 3 end
 end
 
 let child k v
@@ -251,7 +246,7 @@ end
 let normalize k v
     : HNode k v -> HNode k v
     = match
-        HNode:Branch q -> collapse (Prelude:filter (fn c -> not (is_empty_node c) end) (children q)) (HNode:Branch q) end
+        HNode:Branch q -> collapse (Prelude:filter (comp not is_empty_node) (children q)) (HNode:Branch q) end
         n              -> n end
     end
 end
@@ -281,7 +276,7 @@ let get_node (k : Eqable) v
         _, h, key, HNode:Collision (ch * entries) ->
             cond (eq ch h) (assoc_get key entries) Maybe:Nil
         end
-        d, h, key, HNode:Branch q -> get_node (add d 1) h key (child (slot h d) q) end
+        d, h, key, HNode:Branch q -> get_node (succ d) h key (child (slot h d) q) end
     end
 end
 
@@ -311,7 +306,7 @@ let alter_node (k : Eqable) v
                 (alter_split d h key f (HNode:Collision (ch * entries)) ch)
         end
         d, h, key, f, HNode:Branch q ->
-            rebuild_branch (slot h d) q (alter_node (add d 1) h key f (child (slot h d) q))
+            rebuild_branch (slot h d) q (alter_node (succ d) h key f (child (slot h d) q))
         end
     end
 end
@@ -331,15 +326,15 @@ let alter_split (k : Eqable) v
     : Int -> Int -> k -> (Maybe v -> Maybe v) -> HNode k v -> Int -> (HNode k v * Int)
     = fn d, h, key, f, existing, eh ->
         alter_node d h key f (lone_branch d eh existing)
-      end
+    end
 end
 
 # update inside a list of entries that all share one hash
 let alter_collision (k : Eqable) v
     : Int -> k -> (Maybe v -> Maybe v) -> List (k * v) -> (HNode k v * Int)
     = fn h, key, f, entries ->
-        collision_result h (alter_entries key (f (assoc_get key entries)) entries (assoc_has key entries))
-      end
+        collision_result h < alter_entries key (f < assoc_get key entries) entries < assoc_has key entries
+    end
 end
 
 let assoc_has (k : Eqable) v
@@ -353,12 +348,12 @@ let alter_entries (k : Eqable) v
     = match
         key, Maybe:Val value, entries, present ->
             cond present
-                (map (fn e -> cond (eq (fst e) key) (key * value) e end) entries * 0)
+                (map (fn e -> cond (eq key < fst e) (key * value) e end) entries * 0)
                 (append entries [(key * value)] * 1)
         end
         key, Maybe:Nil, entries, present ->
             cond present
-                (Prelude:filter (fn e -> neq (fst e) key end) entries * sub 0 1)
+                (Prelude:filter (comp (neq key) fst) entries * -1)
                 (entries * 0)
         end
     end
@@ -370,16 +365,14 @@ let collision_result k v
         ([] * delta)                      -> (HNode:Empty * delta) end
         (List:Cons ((ek * ev) * []) * delta) -> (HNode:Leaf (h * (ek * ev)) * delta) end
         (entries * delta)                 -> (HNode:Collision (h * entries) * delta) end
-      end
-    end
+    end end
 end
 
 let rebuild_branch k v
     : Int -> ((HNode k v * HNode k v) * (HNode k v * HNode k v)) -> (HNode k v * Int) -> (HNode k v * Int)
     = fn s, q -> match
-        (n * delta) -> (normalize (HNode:Branch (set_child s n q)) * delta) end
-      end
-    end
+        (n * delta) -> (normalize (HNode:Branch < set_child s n q) * delta) end
+    end end
 end
 
 let fold_node k v b
@@ -411,15 +404,15 @@ end
 instance Showable (HashMap k v) is
     let show (k : Showable) (v : Showable)
         : HashMap k v -> String
-        = fn m -> concat "{" (concat (HashMap:show_entries (HashMap:to_list m)) "}") end
+        = fn m -> concat "{" (concat (HashMap:show_entries < HashMap:to_list m) "}") end
     end
 end
 
 let show_entries (k : Showable) (v : Showable)
     : List (k * v) -> String
     = match
-        []                              -> [] end
-        List:Cons ((key * value) * [])  -> concat (show key) (concat ": " (show value)) end
+        []                               -> [] end
+        List:Cons ((key * value) * [])   -> concat (show key) (concat ": " (show value)) end
         List:Cons ((key * value) * rest) ->
             concat (show key) (concat ": " (concat (show value) (concat ", " (show_entries rest))))
         end

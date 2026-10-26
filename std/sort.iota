@@ -29,17 +29,16 @@ end
 # Sorts by a key computed from each element.
 let sort_on a (k : Orderable)
     : (a -> k) -> List a -> List a
-    = fn key -> sort_by (fn x, y -> lse (key x) (key y) end) end
+    = comp sort_by (over lse)
 end
 
 let sort_n a
     : (a -> a -> Bool) -> Int -> List a -> List a
     = fn le, n, xs ->
-        cond (lse n 1)
-            (take n xs)
-            (merge_by le
-                (sort_n le (div n 2) (take (div n 2) xs))
-                (sort_n le (sub n (div n 2)) (drop (div n 2) xs)))
+        cond (lse n 1) (take n xs)
+          < merge_by le
+                (sort_n le (div n 2) < take (div n 2) xs)
+                (sort_n le (sub n < div n 2) < drop (div n 2) xs)
       end
 end
 
@@ -88,5 +87,5 @@ end
 # Sorted, without duplicates.
 let sort_unique (a : Orderable, Eqable)
     : List a -> List a
-    = fn xs -> dedup (sort xs) end
+    = comp dedup sort
 end

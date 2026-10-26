@@ -28,17 +28,17 @@ end
 
 let stdout
     : Output -> String
-    = fn o -> fst (rst o) end
+    = comp fst rst end
 end
 
 let stderr
     : Output -> String
-    = fn o -> rst (rst o) end
+    = comp rst rst end
 end
 
 let success
     : Output -> Bool
-    = fn o -> eq (exit_code o) 0 end
+    = comp (eq 0) exit_code end
 end
 
 # Runs a program with its standard output and error captured (and nothing on its input).
@@ -52,7 +52,7 @@ let run_with_input
     : String -> List String -> String -> IO (Either IOError Output)
     = fn program, args, input ->
         fmap (comp (either_flat decode_capture) io_decode) (prim_run (spec program args) input 0)
-      end
+    end
 end
 
 # Runs a program that shares this program's terminal (it can prompt, draw, and so on) and
@@ -61,7 +61,7 @@ let inherit
     : String -> List String -> IO (Either IOError Int)
     = fn program, args ->
         fmap (comp (either_map first_int) io_decode) (prim_run (spec program args) [] 1)
-      end
+    end
 end
 
 # Runs a command line through /bin/sh, capturing its output.
@@ -93,7 +93,7 @@ end
 # the program and its arguments, each ended by a NUL
 let spec
     : String -> List String -> String
-    = fn program, args -> foldr (fn a, acc -> append a (List:Cons ('\0' * acc)) end) [] (List:Cons (program * args)) end
+    = fn program, args -> foldr (fn a, acc -> append a < List:Cons ('\0' * acc) end) [] (List:Cons (program * args)) end
 end
 
 let either_flat a b e
@@ -101,34 +101,33 @@ let either_flat a b e
     = fn f -> match
         Either:Left x  -> Either:Left x end
         Either:Right v -> f v end
-      end
-    end
+    end end
 end
 
 let int_or_zero
     : String -> Int
-    = fn s -> map_nil_same 0 (Str:parse_int s) end
+    = comp (map_nil_same 0) Str:parse_int
 end
 
 # "<code>\0" -> code
 let first_int
     : String -> Int
-    = fn s -> int_or_zero (take_while (fn c -> neq (ord c) 0 end) s) end
+    = comp int_or_zero < take_while (comp (neq 0) ord)
 end
 
 # "<code>\0<stdout length>\0<stdout><stderr>"
 let decode_capture
     : String -> Either IOError Output
     = fn payload ->
-        Either:Right (capture_parts (first_int payload) (drop_past_nul payload))
-      end
+        Either:Right < capture_parts (first_int payload) (drop_past_nul payload)
+    end
 end
 
 let capture_parts
     : Int -> String -> Output
     = fn code, rest ->
         split_streams code (first_int rest) (drop_past_nul rest)
-      end
+    end
 end
 
 let split_streams
@@ -139,8 +138,8 @@ end
 let split_assignment
     : String -> (String * String)
     = fn kv ->
-        (take_while (fn c -> neq c '=' end) kv * drop 1 (drop_while_not_eq kv))
-      end
+        (take_while (neq '=') kv * drop 1 (drop_while_not_eq kv))
+    end
 end
 
 let drop_while_not_eq

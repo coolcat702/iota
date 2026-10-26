@@ -30,32 +30,32 @@ end
 
 let singleton (a : Hashable, Eqable)
     : a -> HashSet a
-    = fn x -> insert x empty end
+    = flip insert empty
 end
 
 let from_list (a : Hashable, Eqable)
     : List a -> HashSet a
-    = foldl (fn s, x -> insert x s end) empty
+    = foldl (flip insert) empty
 end
 
 let size a
     : HashSet a -> Int
-    = fn s -> HashMap:size (inner s) end
+    = comp HashMap:size inner
 end
 
 let is_empty a
     : HashSet a -> Bool
-    = fn s -> HashMap:is_empty (inner s) end
+    = comp HashMap:is_empty inner
 end
 
 let member (a : Hashable, Eqable)
     : a -> HashSet a -> Bool
-    = fn x, s -> HashMap:member x (inner s) end
+    = comp (flip comp inner) HashMap:member
 end
 
 let insert (a : Hashable, Eqable)
     : a -> HashSet a -> HashSet a
-    = fn x, s -> HashSet:HS (HashMap:insert x unit (inner s)) end
+    = flip (comp comp (comp (comp HashSet:HS) (flip HashMap:insert unit))) inner
 end
 
 let remove (a : Hashable, Eqable)
@@ -71,7 +71,7 @@ end
 
 let to_list a
     : HashSet a -> List a
-    = fn s -> HashMap:keys (inner s) end
+    = comp HashMap:keys inner
 end
 
 let filter (a : Hashable, Eqable)
@@ -81,25 +81,25 @@ end
 
 let union (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> HashSet a
-    = fn x, y -> fold (fn acc, e -> insert e acc end) x y end
+    = fold (flip insert)
 end
 
 # the elements of both sets
 let intersection (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> HashSet a
-    = fn x, y -> filter (fn e -> member e y end) x end
+    = flip < comp filter (flip member)
 end
 
 # the elements of the first set that are not in the second
 let difference (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> HashSet a
-    = fn x, y -> filter (fn e -> not (member e y) end) x end
+    = flip < comp filter < comp (comp not) (flip member)
 end
 
 # every element of the first set is in the second
 let is_subset (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> Bool
-    = fn x, y -> fold (fn ok, e -> and ok (member e y) end) Bool:True x end
+    = fn x, y -> fold (flip < comp and < flip member y) Bool:True x end
 end
 
 instance Showable (HashSet a) is

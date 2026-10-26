@@ -83,7 +83,7 @@ end
 # (columns, rows)
 let size
     : IO (Int * Int)
-    = bind (fn c -> fmap (fn r -> (c * r) end) prim_rows end) prim_cols
+    = bind (comp (flip fmap prim_rows) pair) prim_cols
 end
 
 # True if the window was resized since the last time this (or `read_key`) reported it.
@@ -97,19 +97,18 @@ end
 # Turns raw mode on or off. False if the input is not a terminal.
 let set_raw
     : Bool -> IO Bool
-    = fn on -> fmap (eq 0) (prim_raw (cond on 1 0)) end
+    = fn on -> fmap (eq 0) (prim_raw < cond on 1 0) end
 end
 
 # Runs an action with raw mode on, then restores the terminal.
 let with_raw_mode a
     : IO a -> IO a
     = fn action ->
-        bind (fn on ->
-            bind (fn result ->
-                bind (fn off -> return result end) (set_raw Bool:False)
-            end) action
-        end) (set_raw Bool:True)
-      end
+        set_raw Bool:True
+      > bind < fn on -> action
+      > bind < fn result -> set_raw Bool:False
+      > bind < fn off -> return result end
+    end end end
 end
 
 # ---- keys ----
@@ -130,7 +129,7 @@ end
 # Waits at most this many milliseconds; `Timeout` if nothing was pressed.
 let read_key_timeout
     : Int -> IO Key
-    = fn ms -> fmap key_of_code (prim_key ms) end
+    = comp (fmap key_of_code) prim_key
 end
 
 # The key that is waiting, if any, without blocking.
@@ -141,23 +140,23 @@ end
 
 let key_of_code
     : Int -> Key
-    = fn c ->
-        cond (ls c 0)
-            (cond (eq c -1) Key:Timeout Key:Eof)
-            (cond (gre c 1114112) (special (sub c 1114112)) (plain c))
-      end
+    = fn c -> cond (ls c 0)
+        (cond (eq c -1) Key:Timeout Key:Eof)
+        (cond (gre c 1114112) (special (sub c 1114112)) (plain c))
+    end
 end
 
 let plain
     : Int -> Key
     = fn c ->
         cond (or (eq c 13) (eq c 10)) Key:Enter
-        (cond (eq c 9) Key:Tab
-        (cond (or (eq c 127) (eq c 8)) Key:Backspace
-        (cond (eq c 27) Key:Escape
-        (cond (and (gre c 1) (lse c 26)) (Key:Ctrl (chr (add c 96)))
-        (Key:Ch (chr c))))))
-      end
+      < cond (eq c 9) Key:Tab
+      < cond (or (eq c 127) (eq c 8)) Key:Backspace
+      < cond (eq c 27) Key:Escape
+      < cond (and (gre c 1) (lse c 26))
+        (Key:Ctrl (chr (add c 96)))
+        (Key:Ch (chr c))
+    end
 end
 
 let special
@@ -207,11 +206,11 @@ end
 instance Eqable Key is
     let eq
         : Key -> Key -> Bool
-        = fn a, b -> eq (Term:key_name a) (Term:key_name b) end
+        = over eq Term:key_name
     end
     let neq
         : Key -> Key -> Bool
-        = fn a, b -> neq (Term:key_name a) (Term:key_name b) end
+        = over neq Term:key_name
     end
 end
 

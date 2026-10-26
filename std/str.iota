@@ -131,13 +131,13 @@ end
 # `ends_with suffix s`
 let ends_with
     : String -> String -> Bool
-    = fn suffix, s -> starts_with (reverse suffix) (reverse s) end
+    = over starts_with reverse
 end
 
-# the position of the first occurrence of `needle` in the string
+# the position of the first occurrence in the string
 let find
     : String -> String -> Maybe Int
-    = fn needle, s -> find_from needle s 0 end
+    = flip (comp flip find_from) 0
 end
 
 let find_from
@@ -155,18 +155,18 @@ let find_tail
     : String -> String -> Int -> Maybe Int
     = match
         _, [], _                      -> Maybe:Nil end
-        needle, List:Cons (_ * cs), i -> find_from needle cs (add i 1) end
+        needle, List:Cons (_ * cs), i -> find_from needle cs (succ i) end
     end
 end
 
 let contains
     : String -> String -> Bool
-    = fn needle, s -> neq (find needle s) Maybe:Nil end
+    = comp2 (neq Maybe:Nil) find
 end
 
 let contains_char
     : Char -> String -> Bool
-    = fn c, s -> neq (index_of s c) Maybe:Nil end
+    = comp2 (neq Maybe:Nil) (flip index_of)
 end
 
 # `strip_prefix "ab" "abc"` is `Val "c"`; `Nil` if the prefix does not match
@@ -177,7 +177,7 @@ end
 
 let strip_suffix
     : String -> String -> Maybe String
-    = fn p, s -> cond (ends_with p s) (Maybe:Val (take (sub (len s) (len p)) s)) Maybe:Nil end
+    = fn p, s -> cond (ends_with p s) (Maybe:Val (take (over sub len s p) s)) Maybe:Nil end
 end
 
 # ---- trimming ----
@@ -189,12 +189,12 @@ end
 
 let trim_end
     : String -> String
-    = fn s -> reverse (drop_while is_space (reverse s)) end
+    = comp (comp reverse trim_start) reverse
 end
 
 let trim
     : String -> String
-    = fn s -> trim_end (trim_start s) end
+    = comp trim_end trim_start
 end
 
 # ---- splitting ----
@@ -202,7 +202,7 @@ end
 # Splits at every character satisfying the predicate: "a,b,,c" gives ["a", "b", "", "c"].
 let split_by
     : (Char -> Bool) -> String -> List String
-    = fn p, s -> split_by_step p (take_while (fn c -> not (p c) end) s) (drop_until p s) end
+    = fn p, s -> split_by_step p ((take_while < comp not p) (drop_until p s)) s end
 end
 
 let split_by_step
@@ -215,7 +215,7 @@ end
 
 let drop_until
     : (Char -> Bool) -> String -> String
-    = fn p -> drop_while (fn c -> not (p c) end) end
+    = comp drop_while (comp not)
 end
 
 let split
@@ -229,7 +229,7 @@ let split_str
     : String -> String -> List String
     = fn sep, s ->
         cond (is_empty sep) (map from_char s) (split_str_go sep (len sep) [] s)
-      end
+    end
 end
 
 let split_str_go
@@ -247,12 +247,12 @@ end
 # Lines, with "\n" or "\r\n" endings; a final line break does not add an empty line.
 let lines
     : String -> List String
-    = fn s -> map strip_cr (drop_last_empty (split '\n' s)) end
+    = comp (map strip_cr) (comp drop_last_empty < split '\n')
 end
 
 let strip_cr
     : String -> String
-    = fn s -> cond (ends_with "\r" s) (take (sub (len s) 1) s) s end
+    = fn s -> cond (ends_with "\r" s) (take (pred < len s) s) s end
 end
 
 let drop_last_empty
@@ -266,13 +266,13 @@ end
 
 let unlines
     : List String -> String
-    = fn ls -> flatten (map (fn l -> append l "\n" end) ls) end
+    = comp flatten (map < flip append "\n")
 end
 
 # Splits on runs of white space.
 let words
     : String -> List String
-    = fn s -> filter (fn w -> not (is_empty w) end) (split_by is_space s) end
+    = comp (filter < comp not is_empty) (split_by is_space)
 end
 
 let unwords
@@ -286,8 +286,8 @@ end
 let replace
     : String -> String -> String -> String
     = fn from, to, s ->
-        cond (is_empty from) s (join to (split_str from s))
-      end
+        cond (is_empty from) s (join to < split_str from s)
+    end
 end
 
 # ---- padding ----
@@ -295,12 +295,12 @@ end
 # `pad_left 5 '0' "42"` is "00042"; longer strings are unchanged.
 let pad_left
     : Int -> Char -> String -> String
-    = fn width, c, s -> append (repeat (sub width (len s)) [c]) s end
+    = fn width, c, s -> append (repeat (sub width < len s) [c]) s end
 end
 
 let pad_right
     : Int -> Char -> String -> String
-    = fn width, c, s -> append s (repeat (sub width (len s)) [c]) end
+    = fn width, c, s -> append s (repeat (sub width < len s) [c]) end
 end
 
 # ---- numbers ----
