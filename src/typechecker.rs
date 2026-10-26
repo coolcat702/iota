@@ -1,5 +1,6 @@
 // HM typechecker (Algorithm W)
 
+use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
@@ -70,10 +71,8 @@ fn display_ty_with_names(ty: &Ty, subst: &Subst, names: &HashMap<u32, String>) -
 
 fn collect_ty_vars(ty: &Ty, out: &mut Vec<u32>) {
 	match ty {
-		Ty::Var(n) => {
-			if !out.contains(n) {
-				out.push(*n);
-			}
+		Ty::Var(n) if !out.contains(n) => {
+			out.push(*n);
 		}
 
 		Ty::Fn(a, b) | Ty::App(a, b) | Ty::Product(a, b) | Ty::Sum(a, b) => {
@@ -102,20 +101,15 @@ fn default_type_var_names(ty: &Ty) -> HashMap<u32, String> {
 
 	for var in vars {
 		let name = loop {
-			if letter_idx < preferred.len() {
-				let candidate = preferred[letter_idx].to_string();
+			let candidate = if letter_idx < preferred.len() {
 				letter_idx += 1;
-
-				if !used.contains(&candidate) {
-					break candidate;
-				}
+				preferred[letter_idx].to_string()
 			} else {
-				let candidate = format!("t{}", overflow_idx);
 				overflow_idx += 1;
-
-				if !used.contains(&candidate) {
-					break candidate;
-				}
+				format!("t{}", overflow_idx)
+			};
+			if !used.contains(&candidate) {
+				break candidate;
 			}
 		};
 
@@ -131,7 +125,7 @@ fn default_type_var_names(ty: &Ty) -> HashMap<u32, String> {
 pub struct Scheme {
 	pub vars: Vec<u32>,
 	pub ty: Ty,
-	pub constraints: HashMap<u32, Vec<String>>, // id -> class names
+	pub constraints: HashMap<u32, HashSet<String>>, // id -> class names
 }
 
 impl Scheme {
@@ -173,7 +167,7 @@ impl Scheme {
 				let vname = &names[v];
 				match self.constraints.get(v) {
 					Some(classes) if !classes.is_empty() => {
-						format!("({}: {})", vname, classes.join(" + "))
+						format!("({}: {})", vname, classes.iter().join(" + "))
 					}
 					_ => format!("({})", vname),
 				}
@@ -185,53 +179,37 @@ impl Scheme {
 
 	fn build_names(vars: &[u32], hints: Option<&HashMap<u32, String>>) -> HashMap<u32, String> {
 		let mut names: HashMap<u32, String> = HashMap::new();
-		let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+		let mut used: HashSet<String> = HashSet::new();
 
 		// assign hinted names where they exist and don't conflict
 		if let Some(hints) = hints {
 			let mut hint_counts: HashMap<&str, usize> = HashMap::new();
 			for v in vars {
-				if let Some(h) = hints.get(v) {
-					*hint_counts.entry(h.as_str()).or_insert(0) += 1;
-				}
-			}
-			for v in vars {
-				if let Some(h) = hints.get(v) {
-					if hint_counts[h.as_str()] == 1 {
-						names.insert(*v, h.clone());
-						used.insert(h.clone());
-					}
+				let Some(h) = hints.get(v) else {
+					continue;
+				};
+				*hint_counts.entry(h.as_str()).or_insert(0) += 1;
+				if hint_counts[h.as_str()] == 1 {
+					names.insert(*v, h.clone());
+					used.insert(h.clone());
 				}
 			}
 		}
 
 		// assign letters then tN
-		let mut letter_idx: usize = 0;
-		let mut overflow_idx: usize = 0;
-
+		let mut candidates = (0..26)
+			.map(|i| ((b'a' + i) as char).to_string())
+			.chain((1..).map(|i| format!("t{i}")));
 		for v in vars {
 			if names.contains_key(v) {
 				continue;
 			}
-			let name = loop {
-				if letter_idx < 26 {
-					let candidate = ((b'a' + letter_idx as u8) as char).to_string();
-					letter_idx += 1;
-					if !used.contains(&candidate) {
-						break candidate;
-					}
-				} else {
-					let candidate = format!("t{}", overflow_idx);
-					overflow_idx += 1;
-					if !used.contains(&candidate) {
-						break candidate;
-					}
-				}
-			};
+
+			let name = candidates.by_ref().find(|c| !used.contains(c)).unwrap();
+
 			used.insert(name.clone());
 			names.insert(*v, name);
 		}
-
 		names
 	}
 }
@@ -354,7 +332,7 @@ impl TypeEnv {
 fn generalise_with_constraints(
 	env: &TypeEnv,
 	ty: &Ty,
-	constraints: &HashMap<u32, Vec<String>>,
+	constraints: &HashMap<u32, HashSet<String>>,
 ) -> Scheme {
 	// first-occurrence order, deduplicated (same order as before)
 	let mut ty_fvs: Vec<u32> = Vec::new();
@@ -374,7 +352,7 @@ fn generalise_with_constraints(
 		.into_iter()
 		.filter(|v| !env_fvs.contains(v))
 		.collect();
-	let bound_constraints: HashMap<u32, Vec<String>> = bound
+	let bound_constraints: HashMap<u32, HashSet<String>> = bound
 		.iter()
 		.filter_map(|v| constraints.get(v).map(|cs| (*v, cs.clone())))
 		.collect();
@@ -395,17 +373,14 @@ fn class_method_constraint_map(
 	method_constraints: &[Spanned<Constraint>],
 	tvars: &HashMap<String, Ty>,
 	subst: &Subst,
-) -> HashMap<u32, Vec<String>> {
-	let mut map: HashMap<u32, Vec<String>> = HashMap::new();
+) -> HashMap<u32, HashSet<String>> {
+	let mut map: HashMap<u32, HashSet<String>> = HashMap::new();
 
 	let mut add = |var_name: &str, class: String| {
-		if let Some(tv) = tvars.get(var_name) {
-			if let Ty::Var(id) = subst.apply(tv) {
-				let classes = map.entry(id).or_default();
-				if !classes.contains(&class) {
-					classes.push(class);
-				}
-			}
+		if let Some(tv) = tvars.get(var_name)
+			&& let Ty::Var(id) = subst.apply(tv)
+		{
+			map.entry(id).or_default().insert(class);
 		}
 	};
 
@@ -570,16 +545,14 @@ impl<'r> Checker<'r> {
 				self.unify(&a1, &a2, env, span);
 				self.unify(&b1, &b2, env, span);
 			}
-			(t1, t2) => {
-				self.error(
-					format!(
-						"Type mismatch:\n  expected: {}\n  found:    {}",
-						t1.display(&self.subst),
-						t2.display(&self.subst)
-					),
-					span,
-				);
-			}
+			(t1, t2) => self.error(
+				format!(
+					"Type mismatch:\n  expected: {}\n  found:    {}",
+					t1.display(&self.subst),
+					t2.display(&self.subst)
+				),
+				span,
+			),
 		}
 	}
 
@@ -620,17 +593,11 @@ impl<'r> Checker<'r> {
 					return t.clone();
 				}
 
-				// global ctor
-				if env.type_ctors.contains_key(name.as_str()) {
-					return Ty::Named(name.clone());
-				}
-
-				if env.type_aliases.contains_key(name.as_str()) {
-					return Ty::Named(name.clone());
-				}
-
-				// data ctor name
-				if in_type_def {
+				// global ctor or data ctor name
+				if env.type_ctors.contains_key(name.as_str())
+					|| env.type_aliases.contains_key(name.as_str())
+					|| in_type_def
+				{
 					return Ty::Named(name.clone());
 				}
 
@@ -658,8 +625,8 @@ impl<'r> Checker<'r> {
 					in_type_def,
 				)),
 			),
-			AstType::Product(a, b) => {
-				let ta = self.ast_type_to_ty_inner(
+			AstType::Product(a, b) => Ty::Product(
+				Box::new(self.ast_type_to_ty_inner(
 					&Spanned {
 						item: a.item.clone(),
 						span: *span,
@@ -667,8 +634,8 @@ impl<'r> Checker<'r> {
 					tvars,
 					env,
 					in_type_def,
-				);
-				let tb = self.ast_type_to_ty_inner(
+				)),
+				Box::new(self.ast_type_to_ty_inner(
 					&Spanned {
 						item: b.item.clone(),
 						span: *span,
@@ -676,11 +643,10 @@ impl<'r> Checker<'r> {
 					tvars,
 					env,
 					in_type_def,
-				);
-				Ty::Product(Box::new(ta), Box::new(tb))
-			}
-			AstType::Sum(a, b) => {
-				let ta = self.ast_type_to_ty_inner(
+				)),
+			),
+			AstType::Sum(a, b) => Ty::Sum(
+				Box::new(self.ast_type_to_ty_inner(
 					&Spanned {
 						item: a.item.clone(),
 						span: *span,
@@ -688,8 +654,8 @@ impl<'r> Checker<'r> {
 					tvars,
 					env,
 					in_type_def,
-				);
-				let tb = self.ast_type_to_ty_inner(
+				)),
+				Box::new(self.ast_type_to_ty_inner(
 					&Spanned {
 						item: b.item.clone(),
 						span: *span,
@@ -697,11 +663,10 @@ impl<'r> Checker<'r> {
 					tvars,
 					env,
 					in_type_def,
-				);
-				Ty::Sum(Box::new(ta), Box::new(tb))
-			}
-			AstType::App(f, a) => {
-				let tf = self.ast_type_to_ty_inner(
+				)),
+			),
+			AstType::App(f, a) => Ty::App(
+				Box::new(self.ast_type_to_ty_inner(
 					&Spanned {
 						item: f.item.clone(),
 						span: *span,
@@ -709,8 +674,8 @@ impl<'r> Checker<'r> {
 					tvars,
 					env,
 					in_type_def,
-				);
-				let ta = self.ast_type_to_ty_inner(
+				)),
+				Box::new(self.ast_type_to_ty_inner(
 					&Spanned {
 						item: a.item.clone(),
 						span: *span,
@@ -718,9 +683,8 @@ impl<'r> Checker<'r> {
 					tvars,
 					env,
 					in_type_def,
-				);
-				Ty::App(Box::new(tf), Box::new(ta))
-			}
+				)),
+			),
 		}
 	}
 
@@ -791,21 +755,18 @@ impl<'r> Checker<'r> {
 		}
 
 		let mut expected_branch_ty: Option<Ty> = None;
-		// arg types of the first case; after every case is unified with the
-		// others these are authoritative
+		// arg types of the first case
+		// after every case is unified with the others these are authoritative
 		let mut col_tys: Option<Vec<Ty>> = None;
 		let mut typed_cases: Vec<(Vec<Pattern>, TypedExpr)> = Vec::with_capacity(cases.len());
 
 		for (pats, body) in cases {
 			let mut branch_env = env.clone();
-			let mut pat_tys = Vec::new();
-			for pat in pats {
-				let ty = self.fresh();
-				branch_env
-					.vars
-					.extend(self.check_pattern(pat, &ty, &branch_env));
-				pat_tys.push(ty);
+			let pat_tys: Vec<_> = pats.iter().map(|_| self.fresh()).collect();
+			for (pat, ty) in pats.iter().zip(&pat_tys) {
+				branch_env.vars.extend(self.check_pattern(pat, ty, &env));
 			}
+
 			if col_tys.is_none() {
 				col_tys = Some(pat_tys.clone());
 			}
@@ -866,11 +827,10 @@ impl<'r> Checker<'r> {
 		let segments = &q.item.0;
 		let Spanned { item: _, span } = q;
 
-		if segments.len() == 1 {
-			let name = &segments[0];
-			if let Some(scheme) = env.vars.get(name.as_str()) {
-				return self.instantiate(scheme);
-			}
+		if segments.len() == 1
+			&& let Some(scheme) = env.vars.get(&segments[0])
+		{
+			return self.instantiate(scheme);
 		}
 
 		if let Some(scheme) = env.data_ctors.get(segments) {
@@ -922,11 +882,7 @@ impl<'r> Checker<'r> {
 	) -> Option<Vec<MatchWitness>> {
 		let Some((ty0, rest_tys)) = col_tys.split_first() else {
 			// no more cols, row is covered iff some row survived
-			return if matrix.is_empty() {
-				Some(Vec::new())
-			} else {
-				None
-			};
+			return matrix.is_empty().then(Vec::new);
 		};
 		let ty0 = self.subst.apply(ty0);
 
@@ -954,35 +910,33 @@ impl<'r> Checker<'r> {
 		// resolved type of sum val is Ty::Sum, not Ty::Named
 		// bc full ctor signature is read directly off type structure, it must be complete
 		// `ctor_signature`/`env.data_ctors` kept in case i fucked up somehow
-		if let Ty::Sum(a, b) = &ty0 {
-			if matrix
+		if let Ty::Sum(a, b) = &ty0
+			&& matrix
 				.iter()
 				.any(|r| matches!(r[0], Pattern::Left(_) | Pattern::Right(_)))
-			{
-				for (is_left, payload_ty) in [(true, (**a).clone()), (false, (**b).clone())] {
-					let sub_matrix: Vec<Vec<Pattern>> = matrix
-						.iter()
-						.filter_map(|row| specialize_sum_row(row, is_left))
-						.collect();
-					let mut sub_tys = vec![payload_ty];
-					sub_tys.extend(rest_tys.iter().cloned());
-					if let Some(w) = self.find_uncovered(&sub_matrix, &sub_tys, env, span) {
-						let (head, tail) = w.split_at(1);
-						let shown = if is_left { "left" } else { "right" };
-						let mut out = vec![MatchWitness::Ctor(
-							format!("({})", if is_left { "_ +" } else { "+ _" }),
-							head.first()
-								.cloned()
-								.filter(|h| !matches!(h, MatchWitness::Wild))
-								.map(Box::new),
-						)];
-						let _ = shown;
-						out.extend_from_slice(tail);
-						return Some(out);
-					}
-				}
-				return None;
+		{
+			for (is_left, payload_ty) in [(true, (**a).clone()), (false, (**b).clone())] {
+				let sub_matrix: Vec<Vec<Pattern>> = matrix
+					.iter()
+					.filter_map(|row| specialize_sum_row(row, is_left))
+					.collect();
+				let mut sub_tys = vec![payload_ty];
+				sub_tys.extend(rest_tys.iter().cloned());
+				let Some(w) = self.find_uncovered(&sub_matrix, &sub_tys, env, span) else {
+					return None;
+				};
+				let (head, tail) = w.split_at(1);
+				let mut out = vec![MatchWitness::Ctor(
+					format!("({})", if is_left { "_ +" } else { "+ _" }),
+					head.first()
+						.cloned()
+						.filter(|h| !matches!(h, MatchWitness::Wild))
+						.map(Box::new),
+				)];
+				out.extend_from_slice(tail);
+				return Some(out);
 			}
+			return None;
 		}
 		if matches!(ty0, Ty::Sum(_, _)) {
 			let full_sig = flatten_sum(&ty0);
@@ -994,84 +948,85 @@ impl<'r> Checker<'r> {
 					.collect();
 				let mut sub_tys: Vec<Ty> = payload_ty.iter().cloned().collect();
 				sub_tys.extend(rest_tys.iter().cloned());
-				if let Some(w) = self.find_uncovered(&sub_matrix, &sub_tys, env, span) {
-					let (head, tail) = w.split_at(arity);
-					let payload = head.first().cloned().map(Box::new);
-					let mut out = vec![MatchWitness::Ctor(name.clone(), payload)];
-					out.extend_from_slice(tail);
-					return Some(out);
-				}
+				let Some(w) = self.find_uncovered(&sub_matrix, &sub_tys, env, span) else {
+					continue;
+				};
+				let (head, tail) = w.split_at(arity);
+				let payload = head.first().cloned().map(Box::new);
+				let mut out = vec![MatchWitness::Ctor(name.clone(), payload)];
+				out.extend_from_slice(tail);
+				return Some(out);
 			}
 			return None;
 		}
 
 		let sig_result = self.ctor_signature(&ty0, env);
-		match sig_result {
-			Some(full_sig) => {
-				let heads_seen: Vec<&str> = matrix
-					.iter()
-					.filter_map(|row| pattern_ctor_name(&row[0]))
-					.collect();
-				let complete = full_sig
-					.iter()
-					.all(|(name, _)| heads_seen.contains(&name.as_str()));
 
-				if complete {
-					// try every ctor, if any has an uncovered case then it's
-					// the witness
-					for (name, arity) in &full_sig {
-						let sub_matrix: Vec<Vec<Pattern>> = matrix
-							.iter()
-							.filter_map(|row| specialize_ctor_row(row, name, *arity))
-							.collect();
-						let mut sub_tys = self.ctor_payload_tys(&ty0, name, *arity, env, span);
-						sub_tys.extend(rest_tys.iter().cloned());
-						if let Some(w) = self.find_uncovered(&sub_matrix, &sub_tys, env, span) {
-							let (head, tail) = w.split_at(*arity);
-							let payload = head.first().cloned().map(Box::new);
-							let mut out = vec![MatchWitness::Ctor(name.clone(), payload)];
-							out.extend_from_slice(tail);
-							return Some(out);
-						}
-					}
-					None
-				} else {
-					// if missing a whole ctor, anything under it is uncovered
-					let missing = full_sig
-						.iter()
-						.find(|(name, _)| !heads_seen.contains(&name.as_str()));
-					let default_matrix: Vec<Vec<Pattern>> =
-						matrix.iter().filter_map(|row| default_row(row)).collect();
-					self.find_uncovered(&default_matrix, rest_tys, env, span)
-						.map(|mut w| {
-							let head_witness = match missing {
-								Some((name, arity)) => MatchWitness::Ctor(
-									name.clone(),
-									if *arity == 1 {
-										Some(Box::new(MatchWitness::Wild))
-									} else {
-										None
-									},
-								),
-								None => MatchWitness::Wild,
-							};
-							w.insert(0, head_witness);
-							w
-						})
-				}
-			}
+		let Some(full_sig) = sig_result else {
 			// only pattern that can actually make it exhaustive is a wildcard
 			// so only default matrix (rows alr have one here) can cover
-			None => {
-				let default_matrix: Vec<Vec<Pattern>> =
-					matrix.iter().filter_map(|row| default_row(row)).collect();
-				self.find_uncovered(&default_matrix, rest_tys, env, span)
-					.map(|mut w| {
-						w.insert(0, MatchWitness::Wild);
-						w
-					})
+			let default_matrix: Vec<Vec<Pattern>> =
+				matrix.iter().filter_map(|row| default_row(row)).collect();
+			return self
+				.find_uncovered(&default_matrix, rest_tys, env, span)
+				.map(|mut w| {
+					w.insert(0, MatchWitness::Wild);
+					w
+				});
+		};
+
+		let heads_seen: Vec<&str> = matrix
+			.iter()
+			.filter_map(|row| pattern_ctor_name(&row[0]))
+			.collect();
+		let complete = full_sig
+			.iter()
+			.all(|(name, _)| heads_seen.contains(&name.as_str()));
+
+		if complete {
+			// try every ctor, if any has an uncovered case then it's
+			// the witness
+			for (name, arity) in &full_sig {
+				let sub_matrix: Vec<Vec<Pattern>> = matrix
+					.iter()
+					.filter_map(|row| specialize_ctor_row(row, name, *arity))
+					.collect();
+				let mut sub_tys = self.ctor_payload_tys(&ty0, name, *arity, env, span);
+				sub_tys.extend(rest_tys.iter().cloned());
+				let Some(w) = self.find_uncovered(&sub_matrix, &sub_tys, env, span) else {
+					continue;
+				};
+				let (head, tail) = w.split_at(*arity);
+				let payload = head.first().cloned().map(Box::new);
+				let mut out = vec![MatchWitness::Ctor(name.to_string(), payload)];
+				out.extend_from_slice(tail);
+				return Some(out);
 			}
+			return None;
 		}
+
+		// if missing a whole ctor, anything under it is uncovered
+		let missing = full_sig
+			.iter()
+			.find(|(name, _)| !heads_seen.contains(&name.as_str()));
+		let default_matrix: Vec<Vec<Pattern>> =
+			matrix.iter().filter_map(|row| default_row(row)).collect();
+		self.find_uncovered(&default_matrix, rest_tys, env, span)
+			.map(|mut w| {
+				let head_witness = match missing {
+					Some((name, arity)) => MatchWitness::Ctor(
+						name.clone(),
+						if *arity == 1 {
+							Some(Box::new(MatchWitness::Wild))
+						} else {
+							None
+						},
+					),
+					None => MatchWitness::Wild,
+				};
+				w.insert(0, head_witness);
+				w
+			})
 	}
 
 	// if ty is a registered sum, any (ctor, arity) pairs have arity 0 or 1
@@ -1282,17 +1237,15 @@ impl<'r> Checker<'r> {
 
 			let mut env_for_gen = with_env.clone();
 			env_for_gen.vars.remove(&b.name.item);
-			let mut constraint_map: HashMap<u32, Vec<String>> = HashMap::new();
+			let mut constraint_map: HashMap<u32, HashSet<String>> = HashMap::new();
 			for constraint in &b.constraints {
-				if let Some(tv) = c.tvars.get(&constraint.item.type_var.item) {
-					if let Ty::Var(id) = self.subst.apply(tv) {
-						let classes = constraint_map.entry(id).or_default();
-						for class_name in &constraint.item.class_names {
-							if !classes.contains(&class_name.item) {
-								classes.push(class_name.item.clone());
-							}
-						}
-					}
+				if let Some(tv) = c.tvars.get(&constraint.item.type_var.item)
+					&& let Ty::Var(id) = self.subst.apply(tv)
+				{
+					constraint_map
+						.entry(id)
+						.or_default()
+						.extend(constraint.item.class_names.iter().map(|cn| cn.item.clone()));
 				}
 			}
 			let scheme = generalise_with_constraints(&env_for_gen, &final_ty, &constraint_map);
@@ -1381,17 +1334,15 @@ impl<'r> Checker<'r> {
 
 			let mut env_for_gen = env.clone();
 			env_for_gen.vars.remove(&c.b.name.item);
-			let mut constraint_map: HashMap<u32, Vec<String>> = HashMap::new();
+			let mut constraint_map: HashMap<u32, HashSet<String>> = HashMap::new();
 			for constraint in &c.b.constraints {
-				if let Some(tv) = c.tvars.get(&constraint.item.type_var.item) {
-					if let Ty::Var(id) = self.subst.apply(tv) {
-						let classes = constraint_map.entry(id).or_default();
-						for class_name in &constraint.item.class_names {
-							if !classes.contains(&class_name.item) {
-								classes.push(class_name.item.clone());
-							}
-						}
-					}
+				if let Some(tv) = c.tvars.get(&constraint.item.type_var.item)
+					&& let Ty::Var(id) = self.subst.apply(tv)
+				{
+					constraint_map
+						.entry(id)
+						.or_default()
+						.extend(constraint.item.class_names.iter().map(|cn| cn.item.clone()));
 				}
 			}
 			let scheme = generalise_with_constraints(&env_for_gen, &final_ty, &constraint_map);
@@ -1462,17 +1413,15 @@ impl<'r> Checker<'r> {
 			let mut env_for_gen = env.clone();
 			env_for_gen.vars.remove(&binding.name.item);
 
-			let mut constraint_map: HashMap<u32, Vec<String>> = HashMap::new();
+			let mut constraint_map: HashMap<u32, HashSet<String>> = HashMap::new();
 			for constraint in &binding.constraints {
-				if let Some(tv) = tvars.get(&constraint.item.type_var.item) {
-					if let Ty::Var(id) = self.subst.apply(tv) {
-						let classes = constraint_map.entry(id).or_default();
-						for class_name in &constraint.item.class_names {
-							if !classes.contains(&class_name.item) {
-								classes.push(class_name.item.clone());
-							}
-						}
-					}
+				if let Some(tv) = tvars.get(&constraint.item.type_var.item)
+					&& let Ty::Var(id) = self.subst.apply(tv)
+				{
+					constraint_map
+						.entry(id)
+						.or_default()
+						.extend(constraint.item.class_names.iter().map(|cn| cn.item.clone()));
 				}
 			}
 
@@ -1750,10 +1699,10 @@ fn scc_order<'a>(group: &[(&'a Binding, Span)]) -> Vec<Vec<(&'a Binding, Span)>>
 	let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
 	for (i, (b, _)) in group.iter().enumerate() {
 		for referenced in binding_refs(b) {
-			if let Some(&j) = name_to_idx.get(referenced.as_str()) {
-				if j != i {
-					adj[i].push(j);
-				}
+			if let Some(&j) = name_to_idx.get(referenced.as_str())
+				&& j != i
+			{
+				adj[i].push(j);
 			}
 		}
 	}
@@ -2045,12 +1994,11 @@ fn collect_free_type_vars(
 	checker: &mut Checker<'_>,
 ) {
 	match &ast.item {
-		AstType::Var(name) => {
+		AstType::Var(name)
 			if !env.type_ctors.contains_key(name.as_str())
-				&& !env.type_aliases.contains_key(name.as_str())
-			{
-				tvars.entry(name.clone()).or_insert_with(|| checker.fresh());
-			}
+				&& !env.type_aliases.contains_key(name.as_str()) =>
+		{
+			tvars.entry(name.clone()).or_insert_with(|| checker.fresh());
 		}
 		AstType::Fn(a, b) | AstType::Sum(a, b) | AstType::Product(a, b) | AstType::App(a, b) => {
 			collect_free_type_vars(a, tvars, env, checker);
@@ -2067,14 +2015,11 @@ fn register_data_ctors(
 	env: &mut TypeEnv,
 	checker: &mut Checker<'_>,
 ) {
-	let result_ty = {
-		let mut t: Ty = Ty::Named(type_name.to_string());
-		for _p in params {
-			let tv = checker.fresh();
-			t = Ty::App(Box::new(t), Box::new(tv));
-		}
-		t
-	};
+	let result_ty = params
+		.iter()
+		.fold(Ty::Named(type_name.to_string()), |t, _| {
+			Ty::App(Box::new(t), Box::new(checker.fresh()))
+		});
 	collect_ctors_from_sum(type_name, body, &result_ty, params, env, checker);
 }
 
@@ -2105,42 +2050,41 @@ fn collect_ctors_from_sum(
 			env.insert(name.clone(), scheme);
 		}
 		// App where fn is Var = ctor
-		AstType::App(f, payload) => {
+		AstType::App(f, payload)
 			if let Spanned {
 				item: AstType::Var(ctor_name),
 				..
-			} = f.as_ref()
-			{
-				let mut tvars: HashMap<String, Ty> = HashMap::new();
-				for p in params {
-					let tv = checker.fresh();
-					tvars.insert(p.clone(), tv);
-				}
-				let payload_ty = checker.ast_type_to_ty_in_def(payload, &mut tvars, env);
-
-				let result_rebuilt = rebuild_result_ty(type_name, params, &tvars);
-				let ctor_fn_ty = Ty::Fn(Box::new(payload_ty), Box::new(result_rebuilt));
-				let scheme = generalise(&TypeEnv::default(), &ctor_fn_ty);
-				let ctor_key = vec![type_name.to_string(), ctor_name.clone()];
-				env.data_ctors.insert(ctor_key.clone(), scheme.clone());
-				env.data_ctors
-					.insert(vec![ctor_name.clone()], scheme.clone());
-				env.insert(format!("{}:{}", type_name, ctor_name), scheme.clone());
-				env.insert(ctor_name.clone(), scheme);
+			} = f.as_ref() =>
+		{
+			let mut tvars: HashMap<String, Ty> = HashMap::new();
+			for p in params {
+				let tv = checker.fresh();
+				tvars.insert(p.clone(), tv);
 			}
+			let payload_ty = checker.ast_type_to_ty_in_def(payload, &mut tvars, env);
+
+			let result_rebuilt = rebuild_result_ty(type_name, params, &tvars);
+			let ctor_fn_ty = Ty::Fn(Box::new(payload_ty), Box::new(result_rebuilt));
+			let scheme = generalise(&TypeEnv::default(), &ctor_fn_ty);
+			let ctor_key = vec![type_name.to_string(), ctor_name.clone()];
+			env.data_ctors.insert(ctor_key.clone(), scheme.clone());
+			env.data_ctors
+				.insert(vec![ctor_name.clone()], scheme.clone());
+			env.insert(format!("{}:{}", type_name, ctor_name), scheme.clone());
+			env.insert(ctor_name.clone(), scheme);
 		}
 		_ => {}
 	}
 }
 
 fn rebuild_result_ty(type_name: &str, params: &[String], tvars: &HashMap<String, Ty>) -> Ty {
-	let mut t: Ty = Ty::Named(type_name.to_string());
-	for p in params {
-		if let Some(tv) = tvars.get(p) {
-			t = Ty::App(Box::new(t), Box::new(tv.clone()));
-		}
-	}
-	t
+	params
+		.iter()
+		.map(|p| tvars.get(p))
+		.flatten()
+		.fold(Ty::Named(type_name.to_string()), |t, tv| {
+			Ty::App(Box::new(t), Box::new(tv.clone()))
+		})
 }
 
 #[allow(unused)]
@@ -2342,18 +2286,16 @@ fn forward_declare_tl_in(
 			let ty = checker.ast_type_to_ty(&b.typ, &mut tvars, env);
 
 			// instance bodies are checked before following bindings
-			let mut constraint_map: HashMap<u32, Vec<String>> = HashMap::new();
+			let mut constraint_map: HashMap<u32, HashSet<String>> = HashMap::new();
 			for constraint in &b.constraints {
 				if let Some(Ty::Var(id)) = tvars
 					.get(&constraint.item.type_var.item)
 					.map(|t| checker.subst.apply(t))
 				{
-					let classes = constraint_map.entry(id).or_default();
-					for c in &constraint.item.class_names {
-						if !classes.contains(&c.item) {
-							classes.push(c.item.clone());
-						}
-					}
+					constraint_map
+						.entry(id)
+						.or_default()
+						.extend(constraint.item.class_names.iter().map(|cn| cn.item.clone()));
 				}
 			}
 			let scheme = generalise_with_constraints(env, &ty, &constraint_map);

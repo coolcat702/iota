@@ -7,7 +7,7 @@ use crate::ir::*;
 use crate::lang::Lang;
 use crate::parser::Span;
 use crate::typechecker::Ty;
-use crate::types::{default_vars, has_vars, TypeInfo};
+use crate::types::{TypeInfo, default_vars, has_vars};
 
 // polymorphic recursion is bad
 const MAX_INSTANCES: usize = 20000;
@@ -135,22 +135,25 @@ impl<'a> Spec<'a> {
 		if let Some(f) = self.funcs.get(job.name.as_str()).copied() {
 			self.span = f.span;
 			self.process_func(f, &job);
-		} else if let Some(e) = self.externs.get(job.name.as_str()).copied() {
-			self.span = e.span;
-			if e.intrinsic.is_none() {
-				self.err(format!(
+			return;
+		}
+		let Some(e) = self.externs.get(job.name.as_str()).copied() else {
+			return;
+		};
+		self.span = e.span;
+		if e.intrinsic.is_none() {
+			self.err(format!(
 					"`{}` is declared as an extern (`= undefined`) but the lang manifest does not say which intrinsic implements it",
 					e.name
 				));
-			}
-			self.out_externs.push(Extern {
-				name: job.mangled,
-				arity: e.arity,
-				ty: job.ty,
-				intrinsic: e.intrinsic,
-				span: e.span,
-			});
 		}
+		self.out_externs.push(Extern {
+			name: job.mangled,
+			arity: e.arity,
+			ty: job.ty,
+			intrinsic: e.intrinsic,
+			span: e.span,
+		});
 	}
 
 	fn process_func(&mut self, f: &Function, job: &Job) {

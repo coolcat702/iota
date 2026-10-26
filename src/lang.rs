@@ -81,8 +81,10 @@ impl Intrinsic {
 		matches!(
 			self,
 			IAdd | ISub
-				| IAnd | IOr | IXor | IShl | IShr | ISar
-				| CharOrd | CharChr | IToF
+				| IAnd | IOr | IXor
+				| IShl | IShr
+				| ISar | CharOrd
+				| CharChr | IToF
 				| IMul | IEq | INeq
 				| IGr | IGre | ILs
 				| ILse | FAdd

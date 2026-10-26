@@ -549,7 +549,11 @@ impl<'l> Lowerer<'l> {
 					.copied()
 					.filter(|(n, _)| n.starts_with(&prefix))
 					.collect();
-				let matches = if matches.len() > 1 && local.len() == 1 { local } else { matches };
+				let matches = if matches.len() > 1 && local.len() == 1 {
+					local
+				} else {
+					matches
+				};
 				// Instance methods are named after their type (`List:show`), not their module. Only
 				// the Prelude is visible bare outside a module, so there the Prelude's definition wins.
 				let prelude: Vec<&(Name, Ty)> = matches
@@ -557,7 +561,11 @@ impl<'l> Lowerer<'l> {
 					.copied()
 					.filter(|(n, _)| n.starts_with("Prelude:"))
 					.collect();
-				let matches = if matches.len() > 1 && prelude.len() == 1 { prelude } else { matches };
+				let matches = if matches.len() > 1 && prelude.len() == 1 {
+					prelude
+				} else {
+					matches
+				};
 				match matches.as_slice() {
 					[one] => Atom::Global(one.0.clone(), occurrence_ty.clone()),
 					[] => {

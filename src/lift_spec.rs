@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use crate::ir::{fn_chain, peel_fn, Arm, Atom, Expr, Function, IrProgram, Name, Value};
+use crate::ir::{Arm, Atom, Expr, Function, IrProgram, Name, Value, fn_chain, peel_fn};
 use crate::optimize::{expr_size, expr_vars, flatten, rebuild, referenced_globals};
 use crate::parser::{Literal, Span};
 use crate::typechecker::Ty;

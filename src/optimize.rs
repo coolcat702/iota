@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::ir::{
-	count_arrows, display_ty, peel_fn, Arm, Atom, CasePat, Expr, Function, IrProgram, Name, Side,
-	Value,
+	Arm, Atom, CasePat, Expr, Function, IrProgram, Name, Side, Value, count_arrows, display_ty,
+	peel_fn,
 };
 use crate::lang::{Intrinsic, Lang, LangItem};
 use crate::lift_spec::{collect_fn_tys, lambda_lift, specialize_hof};

@@ -812,9 +812,7 @@ let follow
             (follow_try lv st id p < follow_dirs p < st_player st)
             st
     end
-end
-
-let follow_dirs
+with follow_dirs
     : Pt -> Pt -> List Int
     = fn p, q ->
         cond (gre (abs < sub (fst q) (fst p)) (abs < sub (rst q) (rst p)))
@@ -850,19 +848,21 @@ let patrol
     = fn lv, st, id, pi, si, d ->
         patrol_to lv st id pi < patrol_next (len < nth_or [] pi < lv_paths lv) si d
     end
-with patrol_next # (new place on the path, new direction)
-    : Int -> Int -> Int -> (Int * Int)
-    = fn n, si, d ->
-        cond (and (gre (add si d) 0) (ls (add si d) n))
-            (add si d * d)
-            (cond (gr n 1) (sub si d * neg d) (si * d))
-      end
 with patrol_to
     : CwLevel -> CwState -> Int -> Int -> (Int * Int) -> CwState
     = fn lv, st, id, pi, nxt ->
         cond (free lv st < path_pos lv pi < fst nxt)
             (settle lv st id < CwEnemy:EPatroller (pi * (fst nxt * rst nxt)))
             st
+      end
+end
+
+let patrol_next # (new place on the path, new direction)
+    : Int -> Int -> Int -> (Int * Int)
+    = fn n, si, d ->
+        cond (and (gre (add si d) 0) (ls (add si d) n))
+            (add si d * d)
+            (cond (gr n 1) (sub si d * neg d) (si * d))
       end
 end
 

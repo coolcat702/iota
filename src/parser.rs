@@ -93,8 +93,13 @@ fn decode_escapes(s: &str) -> String {
 			Some('a') => out.push('\x07'),
 			// \xHH: exactly two hex digits
 			Some('x') => {
-				let hex: String = (0..2).filter_map(|_| chars.next_if(|c| c.is_ascii_hexdigit())).collect();
-				match (hex.len() == 2).then(|| u32::from_str_radix(&hex, 16).ok()).flatten() {
+				let hex: String = (0..2)
+					.filter_map(|_| chars.next_if(|c| c.is_ascii_hexdigit()))
+					.collect();
+				match (hex.len() == 2)
+					.then(|| u32::from_str_radix(&hex, 16).ok())
+					.flatten()
+				{
 					Some(v) => out.push(char::from_u32(v).unwrap_or('\u{FFFD}')),
 					None => {
 						out.push('x');
@@ -110,7 +115,10 @@ fn decode_escapes(s: &str) -> String {
 					hex.push(h);
 				}
 				let closed = chars.next_if_eq(&'}').is_some();
-				match u32::from_str_radix(&hex, 16).ok().filter(|_| closed && !hex.is_empty()) {
+				match u32::from_str_radix(&hex, 16)
+					.ok()
+					.filter(|_| closed && !hex.is_empty())
+				{
 					Some(v) => out.push(char::from_u32(v).unwrap_or('\u{FFFD}')),
 					None => out.push('\u{FFFD}'),
 				}

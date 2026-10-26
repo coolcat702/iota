@@ -11,7 +11,7 @@
 use std::{
 	collections::HashMap,
 	fs,
-	panic::{catch_unwind, AssertUnwindSafe},
+	panic::{AssertUnwindSafe, catch_unwind},
 	path::{Path, PathBuf},
 	process::{self, Command},
 	time::Instant,
@@ -34,10 +34,10 @@ mod types;
 mod ui;
 
 use backend::mir::{EntryKind, Facts, MProgram};
-use diag::{has_errors, Diagnostic, Severity};
+use diag::{Diagnostic, Severity, has_errors};
 use lang::{Lang, LangItem};
-use parser::{parse, Program, SourceRegistry, Span, Spanned, TopLevel};
-use typechecker::{typecheck, Subst};
+use parser::{Program, SourceRegistry, Span, Spanned, TopLevel, parse};
+use typechecker::{Subst, typecheck};
 use types::TypeInfo;
 use ui::stage;
 
@@ -256,7 +256,10 @@ impl<'r, 'd> Loader<'r, 'd> {
 		if self.loaded.contains_key(&key) {
 			return;
 		}
-		let source_id = self.diag.registry.add(format!("<{}>", name), src.to_string());
+		let source_id = self
+			.diag
+			.registry
+			.add(format!("<{}>", name), src.to_string());
 		let program = match parse(self.diag.registry, source_id, self.debug) {
 			Ok(p) => p,
 			Err(ds) => {
@@ -280,7 +283,7 @@ impl<'r, 'd> Loader<'r, 'd> {
 				return self.io_error(
 					format!("cannot open '{}': {}", path.display(), e),
 					import_span,
-				)
+				);
 			}
 		};
 		if self.loaded.contains_key(&canonical) {
@@ -292,7 +295,7 @@ impl<'r, 'd> Loader<'r, 'd> {
 				return self.io_error(
 					format!("cannot read '{}': {}", canonical.display(), e),
 					import_span,
-				)
+				);
 			}
 		};
 		let program = match parse(self.diag.registry, source_id, self.debug) {
@@ -566,7 +569,9 @@ fn link(cli: &Cli, diag: &mut Diag, ll: &Path, exe: &Path) -> bool {
 			.arg("-o")
 			.arg(&obj),
 		"compiling the generated LLVM IR",
-		Some("the generated LLVM IR may be invalid (re-run with --emit llvm and --keep-ll to inspect it)"),
+		Some(
+			"the generated LLVM IR may be invalid (re-run with --emit llvm and --keep-ll to inspect it)",
+		),
 	);
 	if !ok {
 		return false;
@@ -648,7 +653,10 @@ fn wrap_entry_args(program: &mut ir::IrProgram, entry: &str, lang: &Lang) -> Opt
 	if !is_io_of_status || !is_string_list {
 		return None;
 	}
-	let (fty, res) = (Ty::Fn(Box::new(arg.clone()), Box::new(res.clone())), res.clone());
+	let (fty, res) = (
+		Ty::Fn(Box::new(arg.clone()), Box::new(res.clone())),
+		res.clone(),
+	);
 	let with_args_ty = Ty::Fn(Box::new(fty.clone()), Box::new(res.clone()));
 	let name = "Prelude:entry_with_args".to_string();
 	let body = Expr::Let(

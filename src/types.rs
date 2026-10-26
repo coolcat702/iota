@@ -3,7 +3,7 @@
 use im::HashMap as ImHashMap;
 use std::collections::HashMap;
 
-use crate::typechecker::{ty_head_name, Scheme, Ty, TypeEnv};
+use crate::typechecker::{Scheme, Ty, TypeEnv, ty_head_name};
 
 pub struct TypeInfo {
 	pub ctor_scheme: HashMap<String, Scheme>,
