@@ -372,8 +372,8 @@ end
 let help_lines
     : Int -> List String
     = fn cols -> [
-        center cols < Ansi:dim "Move: WASD/arrows   Wait: space   Dash: Shift+WASD or f then direction",
-        center cols < Ansi:dim "Undo: u   Restart: r   Menu: q / Esc"
+        center cols < Ansi:dim "Move: IJKL/arrows   Wait: space   Dash: Shift+IJKL or f then direction",
+        center cols < Ansi:dim "Undo: z   Restart: c   Menu: x / q / Esc"
     ] end
 end
 
@@ -530,7 +530,7 @@ let refusal
     : CwState -> CwAction -> String
     = fn st, a ->
         cond (not < Engine:is_playing st)
-            (warn "You are dead.  u = undo, r = restart")
+            (warn "You are dead.  z = undo, c = restart")
       < cond (and (is_dash a) (gr (Engine:st_cooldown st) 0))
             (warn "Dash is still recharging.")
             (warn "Something is in the way.")
@@ -621,7 +621,7 @@ let win_note
             ")",
             cond (eq (Engine:st_turn st) (Engine:lv_par lv)) "  ·  perfect!" "",
             "  ·  ",
-            cond more "Enter = next level, q = menu" "Enter = finish"
+            cond more "Enter = next level, x = menu" "Enter = finish"
         ])
     end
 end
@@ -775,7 +775,7 @@ let menu_lines
         banner cols,
         [center cols < Ansi:bold subtitle, ""],
         item_lines cols (widest items) items sel 0,
-        ["", center cols < Ansi:dim "↑/↓ choose · Enter select · 1-9 jump · q back"]
+        ["", center cols < Ansi:dim "↑/↓ choose · Enter select · 1-9 jump · x back"]
     ] end
 end
 
@@ -935,7 +935,7 @@ let how_to_play
         ],
         "",
         "Dash (Shift+IJKL, or f then a direction): two tiles at once, flying over the",
-        "middle one; takes one turn to recover. Undo (u/z) is unlimited. Restart: r/c.",
+        "middle one; takes one turn to recover. Undo (z) is unlimited. Restart: c.",
         "",
         Ansi:dim "Press any key"
     ]
