@@ -156,6 +156,6 @@ let partition_point
         cond (gre lo hi) hi
       < cond (p < add lo < div (sub hi lo) 2)
             (partition_point p lo < add lo < div (sub hi lo) 2)
-            (partition_point p (succ < add lo < div (sub hi lo) 2) hi))
+            (partition_point p (succ < add lo < div (sub hi lo) 2) hi)
       end
 end

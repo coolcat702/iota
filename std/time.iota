@@ -249,7 +249,7 @@ end
 
 let add_seconds
     : Float -> DateTime -> DateTime
-    = fork2 from_unix add to_unix
+    = comp2 from_unix < flip < comp add to_unix
 end
 
 # The local time zone's offset from UTC, in seconds east, at a moment in time.
