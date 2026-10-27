@@ -196,10 +196,10 @@ fn tail_var(e: &Expr) -> Option<&Name> {
 }
 
 fn rename_var_atom(a: &mut Atom, from: &str, to: &str) {
-	if let Atom::Var(n) = a {
-		if n == from {
-			*n = to.to_string();
-		}
+	if let Atom::Var(n) = a
+		&& n == from
+	{
+		*n = to.to_string();
 	}
 }
 
@@ -886,16 +886,14 @@ impl<'a> Cx<'a> {
 					return;
 				}
 			}
-			Value::Unwrap(Atom::Var(n)) => {
-				if let Some(Fact::Ctor(_, Some(p))) = facts.get(n) {
-					let picked = p.clone();
-					if let Some(f) = fact_of_atom(&picked, facts) {
-						facts.insert(x.clone(), f);
-					}
-					subst.insert(x, picked);
-					self.changed.set(true);
-					return;
+			Value::Unwrap(Atom::Var(n)) if let Some(Fact::Ctor(_, Some(p))) = facts.get(n) => {
+				let picked = p.clone();
+				if let Some(f) = fact_of_atom(&picked, facts) {
+					facts.insert(x.clone(), f);
 				}
+				subst.insert(x, picked);
+				self.changed.set(true);
+				return;
 			}
 			Value::App(f, a) => {
 				if self.step_app(&x, &ty, f, a, subst, facts, out, depth, owner, lams) {
@@ -984,19 +982,20 @@ impl<'a> Cx<'a> {
 			}
 			return true;
 		}
-		if self.inline && self.funcs.contains_key(&name) {
-			if let Some((binds, result)) = self.try_inline(&name, &args, facts, depth, owner) {
-				for (n, _, v) in &binds {
-					record_fact(n, v, facts);
-				}
-				if let Some(fact) = fact_of_atom(&result, facts) {
-					facts.insert(x.clone(), fact);
-				}
-				out.extend(binds);
-				subst.insert(x.clone(), result);
-				self.changed.set(true);
-				return true;
+		if self.inline
+			&& self.funcs.contains_key(&name)
+			&& let Some((binds, result)) = self.try_inline(&name, &args, facts, depth, owner)
+		{
+			for (n, _, v) in &binds {
+				record_fact(n, v, facts);
 			}
+			if let Some(fact) = fact_of_atom(&result, facts) {
+				facts.insert(x.clone(), fact);
+			}
+			out.extend(binds);
+			subst.insert(x.clone(), result);
+			self.changed.set(true);
+			return true;
 		}
 		false
 	}
@@ -1241,16 +1240,15 @@ impl<'a> Cx<'a> {
 	}
 
 	fn fold_global(&self, a: Atom) -> Atom {
-		if let Atom::Global(n, _) = &a {
-			if let Some(f) = self.funcs.get(n) {
-				if f.params.is_empty() {
-					if let Expr::Halt(Atom::Lit(l)) = &f.body {
-						return Atom::Lit(l.clone());
-					}
-				}
-			}
+		if let Atom::Global(n, _) = &a
+			&& let Some(f) = self.funcs.get(n)
+			&& f.params.is_empty()
+			&& let Expr::Halt(Atom::Lit(l)) = &f.body
+		{
+			Atom::Lit(l.clone())
+		} else {
+			a
 		}
-		a
 	}
 
 	fn ty_of_atom(&self, a: &Atom) -> Option<Ty> {
@@ -1567,11 +1565,12 @@ pub fn prune_unreachable(program: &mut IrProgram, entry: &str) {
 	let mut work = vec![entry.to_string()];
 	reachable.insert(entry.to_string());
 	while let Some(n) = work.pop() {
-		if let Some(f) = by_name.get(n.as_str()) {
-			for r in referenced_globals(&f.body) {
-				if reachable.insert(r.clone()) {
-					work.push(r);
-				}
+		let Some(f) = by_name.get(n.as_str()) else {
+			continue;
+		};
+		for r in referenced_globals(&f.body) {
+			if reachable.insert(r.clone()) {
+				work.push(r);
 			}
 		}
 	}

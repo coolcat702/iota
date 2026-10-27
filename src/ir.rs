@@ -718,19 +718,16 @@ fn lit_eq(a: &Literal, b: &Literal) -> bool {
 }
 
 pub fn fn_chain(params: &[(Name, Ty)], ret: &Ty) -> Ty {
-	let mut t = ret.clone();
-	for (_, p) in params.iter().rev() {
-		t = Ty::Fn(Box::new(p.clone()), Box::new(t));
-	}
-	t
+	params.iter().rev().fold(ret.clone(), |t, (_, p)| {
+		Ty::Fn(Box::new(p.clone()), Box::new(t))
+	})
 }
 
 fn wrap_lets(binds: Binds, tail: Expr) -> Expr {
-	let mut e = tail;
-	for (x, t, v) in binds.into_iter().rev() {
-		e = Expr::Let(x, t, v, Box::new(e));
-	}
-	e
+	binds
+		.into_iter()
+		.rev()
+		.fold(tail, |e, (x, t, v)| Expr::Let(x, t, v, Box::new(e)))
 }
 
 impl<'l> Lowerer<'l> {
@@ -762,10 +759,10 @@ impl<'l> Lowerer<'l> {
 				},
 			},
 			TypedExpr::Var(path, ty) => {
-				if path.len() == 1 {
-					if let Some(mapped) = env.get(&path[0]) {
-						return Atom::Var(mapped.clone());
-					}
+				if path.len() == 1
+					&& let Some(mapped) = env.get(&path[0])
+				{
+					return Atom::Var(mapped.clone());
 				}
 				if let Some(c) = self.is_ctor_ref(path, ty, env) {
 					return self.ctor_value(c, ty, binds);
@@ -799,13 +796,13 @@ impl<'l> Lowerer<'l> {
 				Atom::Var(x)
 			}
 			TypedExpr::App(func, arg, ty) => {
-				if let Some(c) = self.ctor_head(func, env) {
-					if self.ctor_has_payload(&c) {
-						let aa = self.lower_atom(arg, env, binds);
-						let x = self.fresh("r");
-						binds.push((x.clone(), ty.clone(), Value::Ctor(c, Some(aa))));
-						return Atom::Var(x);
-					}
+				if let Some(c) = self.ctor_head(func, env)
+					&& self.ctor_has_payload(&c)
+				{
+					let aa = self.lower_atom(arg, env, binds);
+					let x = self.fresh("r");
+					binds.push((x.clone(), ty.clone(), Value::Ctor(c, Some(aa))));
+					return Atom::Var(x);
 				}
 				let fa = self.lower_atom(func, env, binds);
 				let aa = self.lower_atom(arg, env, binds);
@@ -1154,12 +1151,11 @@ impl<'l> Lowerer<'l> {
 					new_cols.remove(j);
 					let mut new_rows = Vec::new();
 					for (row, h) in rows.iter().zip(heads.iter()) {
-						let keep = match h {
+						if match h {
 							Head::Lit(l2) => lit_eq(l, l2),
 							Head::Wild => true,
 							Head::Ctor(..) => false,
-						};
-						if keep {
+						} {
 							let mut nr = row.clone();
 							nr.pats.remove(j);
 							new_rows.push(nr);

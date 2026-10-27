@@ -322,25 +322,22 @@ fn scan_static(
 							}
 						}
 					}
-					Value::Atom(a) | Value::Proj(a, _) | Value::Unwrap(a) => {
-						if f_related(a, f, paps) {
-							*escaped = true;
-						}
+					Value::Atom(a) | Value::Proj(a, _) | Value::Unwrap(a)
+						if f_related(a, f, paps) =>
+					{
+						*escaped = true;
 					}
-					Value::Pair(a, b) => {
-						if f_related(a, f, paps) || f_related(b, f, paps) {
-							*escaped = true;
-						}
+					Value::Pair(a, b) if f_related(a, f, paps) || f_related(b, f, paps) => {
+						*escaped = true;
 					}
-					Value::Ctor(_, Some(a)) => {
-						if f_related(a, f, paps) {
-							*escaped = true;
-						}
+					Value::Ctor(_, Some(a)) if f_related(a, f, paps) => {
+						*escaped = true;
 					}
 					Value::Lambda(_, _, body) => {
 						scan_static(body, f, &mut paps.clone(), st, escaped);
 					}
 					Value::Ctor(_, None) | Value::Str(_) | Value::Fail(_) => {}
+					_ => {}
 				}
 				cur = &**rest;
 			}
@@ -475,13 +472,14 @@ impl<'a> Spec<'a> {
 			if !statics[i] || !matches!(pty, Ty::Fn(..)) {
 				continue;
 			}
-			if let Some((h, caps)) = self.known_fun(&args[i], paps) {
-				if h == g {
-					continue;
-				}
-				parts.push((i, h, caps.len()));
-				caps_of.insert(i, caps);
+			let Some((h, caps)) = self.known_fun(&args[i], paps) else {
+				continue;
+			};
+			if h == g {
+				continue;
 			}
+			parts.push((i, h, caps.len()));
+			caps_of.insert(i, caps);
 		}
 		if parts.is_empty() {
 			return None;

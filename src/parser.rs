@@ -1175,13 +1175,13 @@ impl Parser {
 			self.eat(registry, &Token::End)?;
 			let mut passed = Vec::new();
 			for p in pats.iter_mut() {
-				if let Pattern::Left(inner) | Pattern::Right(inner) = &mut p.item {
-					if matches!(inner.item, Pattern::Hole) {
-						let name = format!("sum${}", fresh);
-						fresh += 1;
-						inner.item = Pattern::Variable(name.clone());
-						passed.push((name, inner.span));
-					}
+				if let Pattern::Left(inner) | Pattern::Right(inner) = &mut p.item
+					&& matches!(inner.item, Pattern::Hole)
+				{
+					let name = format!("sum${}", fresh);
+					fresh += 1;
+					inner.item = Pattern::Variable(name.clone());
+					passed.push((name, inner.span));
 				}
 			}
 			for (name, span) in passed {
