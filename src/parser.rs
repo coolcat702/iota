@@ -903,14 +903,19 @@ impl Parser {
 
 	fn parse_product_op(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Expr>> {
 		self.debug_print("parse product op");
-		let mut expr = self.parse_app(registry)?;
+		let first = self.parse_app(registry)?;
 
+		// `a * b * c` is `a * (b * c)`
+		let mut items = vec![first];
 		while self.next_is(&Token::Star) {
 			self.eat(registry, &Token::Star)?;
-			let right = self.parse_app(registry)?;
+			items.push(self.parse_app(registry)?);
+		}
+		let mut expr = items.pop()?;
+		while let Some(left) = items.pop() {
 			expr = Spanned {
-				span: Span::new(self.source_id, expr.span.start, right.span.end),
-				item: Expr::Product(Box::new(expr), Box::new(right)),
+				span: Span::new(self.source_id, left.span.start, expr.span.end),
+				item: Expr::Product(Box::new(left), Box::new(expr)),
 			};
 		}
 		Some(expr)
@@ -1306,13 +1311,21 @@ impl Parser {
 					});
 				}
 				if self.next_is(&Token::Star) {
-					self.eat(registry, &Token::Star)?;
-					let right = self.parse_pattern(registry)?;
+					// `(a * b * c)` is `(a * (b * c))`
+					let mut items = vec![left];
+					while self.next_is(&Token::Star) {
+						self.eat(registry, &Token::Star)?;
+						items.push(self.parse_pattern(registry)?);
+					}
 					self.eat(registry, &Token::RParen)?;
-					Some(Spanned {
-						span: Span::new(self.source_id, span.start, right.span.end),
-						item: Pattern::Product(Box::new(left), Box::new(right)),
-					})
+					let mut pat = items.pop()?;
+					while let Some(l) = items.pop() {
+						pat = Spanned {
+							span: Span::new(self.source_id, span.start, pat.span.end),
+							item: Pattern::Product(Box::new(l), Box::new(pat)),
+						};
+					}
+					Some(pat)
 				} else {
 					self.eat(registry, &Token::RParen)?;
 					Some(left)
@@ -1352,18 +1365,23 @@ impl Parser {
 
 	fn parse_type(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Type>> {
 		self.debug_print("parse type");
-		let mut typ = self.parse_type_func(registry)?;
+		let first = self.parse_type_func(registry)?;
 
+		// `a * b * c` is `a * (b * c)`
+		let mut items = vec![first];
 		while self
 			.peek()
 			.map(|t| &t.item == &Token::Star)
 			.unwrap_or(false)
 		{
 			self.eat(registry, &Token::Star)?;
-			let right = self.parse_type_func(registry)?;
+			items.push(self.parse_type_func(registry)?);
+		}
+		let mut typ = items.pop()?;
+		while let Some(left) = items.pop() {
 			typ = Spanned {
-				span: Span::new(self.source_id, typ.span.start, right.span.end),
-				item: Type::Product(Box::new(typ), Box::new(right)),
+				span: Span::new(self.source_id, left.span.start, typ.span.end),
+				item: Type::Product(Box::new(left), Box::new(typ)),
 			};
 		}
 
