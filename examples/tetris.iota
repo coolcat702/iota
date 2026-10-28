@@ -1,0 +1,967 @@
+module Main is
+
+# TETRIS
+#
+# j / l     move left / right
+# u / i / o rotate ccw / 180/ cw
+# k         soft drop
+# space     hard drop
+# c         hold
+# q         quit
+# r  restart (after game over)
+#
+# 7 bag random
+# one piece preview
+# hold
+# ghost piece
+# SRS-X (SRS + 180 kicks from Heboris)
+# lock delay restarts on move or rotate
+
+import file std/ansi.iota
+import file std/term.iota
+import file std/rng.iota
+import file std/time.iota
+import file std/str.iota
+import file std/search.iota
+
+# x right, y down
+type Cell = Int * Int end
+
+type Board = List (List Int) end
+
+type Piece =
+    Int  # order: IOTSZJL
+  * Int  # rotation: spawn, r, flipped, l
+  * Cell # top left of bounding box
+end
+
+type Game =
+    Board
+  * Piece
+  * Int      # held type, -1 is none
+  * Bool     # hold already used
+  * List Int # upcoming piece types
+  * Gen
+  * Int      # score
+  * Int      # lines
+  * Bool     # game over
+end
+
+type Act = MoveL + MoveR + RotCcw + RotFlip + RotCw + Soft + Hard + Hold + Quit + Restart + Redraw + Ignore
+end
+
+let width : Int = 10 end
+
+let height : Int = 23 end
+
+let hidden : Int = 3 end
+
+# the first row that is drawn: the row above the well, where pieces appear
+let top : Int = 2 end
+
+# ======================================================================================
+# Small helpers
+# ======================================================================================
+
+let spaces
+    : Int -> String
+    = flip repeat " "
+end
+
+let nth_or a
+    : a -> Int -> List a -> a
+    = fn x, i, l ->
+        or_else x < Search:idx l i
+    end
+end
+
+let update_nth a
+    : Int -> (a -> a) -> List a -> List a
+    = match
+        _, _, []                 -> [] end
+        0, f, List:Cons (x * xs) -> List:Cons (f x * xs) end
+        i, f, List:Cons (x * xs) -> List:Cons (x * update_nth (pred i) f xs) end
+    end
+end
+
+let iter a
+    : Int -> (a -> a) -> a -> a
+    = fn n, f, x -> cond (lse n 0) x (iter (pred n) f (f x)) end
+end
+
+# ======================================================================================
+# Pieces
+# ======================================================================================
+
+# the cells of each piece in its spawn orientation, inside its bounding box
+let base
+    : Int -> List Cell
+    = match
+        0 -> [(0 * 1), (1 * 1), (2 * 1), (3 * 1)] end
+        1 -> [(1 * 0), (2 * 0), (1 * 1), (2 * 1)] end
+        2 -> [(1 * 0), (0 * 1), (1 * 1), (2 * 1)] end
+        3 -> [(1 * 0), (2 * 0), (0 * 1), (1 * 1)] end
+        4 -> [(0 * 0), (1 * 0), (1 * 1), (2 * 1)] end
+        5 -> [(0 * 0), (0 * 1), (1 * 1), (2 * 1)] end
+        _ -> [(2 * 0), (0 * 1), (1 * 1), (2 * 1)] end
+    end
+end
+
+# the size of the bounding box
+let box
+    : Int -> Int
+    = fn k -> cond (eq k 0) 4 3 end
+end
+
+# a quarter turn clockwise inside an n x n box
+let turn_cw
+    : Int -> List Cell -> List Cell
+    = fn n, cs -> map (fn c -> (sub (pred n) (rst c) * fst c) end) cs end
+end
+
+# the O piece looks the same in every rotation
+let shape
+    : Int -> Int -> List Cell
+    = fn k, r -> cond (eq k 1) (base 1) (iter r (turn_cw (box k)) (base k)) end
+end
+
+let kind_of
+    : Piece -> Int
+    = fst
+end
+
+let rot_of
+    : Piece -> Int
+    = comp fst rst
+end
+
+let px
+    : Piece -> Int
+    = comp fst (comp rst rst)
+end
+
+let py
+    : Piece -> Int
+    = comp rst (comp rst rst)
+end
+
+# the cells a piece covers on the board
+let cells
+    : Piece -> List Cell
+    = fn p -> map (fn c -> (add (px p) (fst c) * add (py p) (rst c)) end) (shape (kind_of p) (rot_of p)) end
+end
+
+let moved
+    : Int -> Int -> Piece -> Piece
+    = fn dx, dy, p -> (kind_of p * (rot_of p * (add (px p) dx * add (py p) dy))) end
+end
+
+# ======================================================================================
+# The board
+# ======================================================================================
+
+let empty_row
+    : List Int
+    = repeat width [0]
+end
+
+let empty_board
+    : Board
+    = repeat height [empty_row]
+end
+
+# what is at a cell; outside the well counts as filled
+let at
+    : Board -> Int -> Int -> Int
+    = fn b, x, y ->
+        cond (or (or (ls x 0) (gre x width)) (or (ls y 0) (gre y height)))
+            1 (nth_or 1 x (nth_or [] y b))
+    end
+end
+
+let fits
+    : Board -> Piece -> Bool
+    = fn b, p -> Search:all (fn c -> eq 0 (at b (fst c) (rst c)) end) (cells p) end
+end
+
+let put
+    : Int -> Board -> Cell -> Board
+    = fn v, b, c -> update_nth (rst c) (update_nth (fst c) (const v)) b end
+end
+
+let lock
+    : Board -> Piece -> Board
+    = fn b, p -> foldl (put < succ < kind_of p) b (cells p) end
+end
+
+let is_full
+    : List Int -> Bool
+    = Search:all (neq 0)
+end
+
+# (number of lines cleared, the new board)
+let clear_lines
+    : Board -> (Int * Board)
+    = fn b -> fill_top (len (filter is_full b)) (filter (comp not is_full) b) end
+end
+
+let fill_top
+    : Int -> Board -> (Int * Board)
+    = fn n, kept -> (n * append (repeat n [empty_row]) kept) end
+end
+
+# where a piece ends up if it falls as far as it can
+let fall_to
+    : Board -> Piece -> Piece
+    = fn b, p -> cond (fits b (moved 0 1 p)) (fall_to b (moved 0 1 p)) p end
+end
+
+# Rotation: SRS kicks for quarter turns, SRS-X kicks for half turns
+
+# Kicks are (x, y) with x right and y up, as in the SRS tables. The first test is
+# always the plain rotation (0, 0).
+
+# J, L, S, T and Z, from rotation -> to rotation
+let kicks_jlstz
+    : Int -> Int -> List Cell
+    = match
+        0, 1 -> [(0 * 0), (-1 * 0), (-1 * 1), (0 * -2), (-1 * -2)] end
+        1, 0 -> [(0 * 0), (1 * 0), (1 * -1), (0 * 2), (1 * 2)] end
+        1, 2 -> [(0 * 0), (1 * 0), (1 * -1), (0 * 2), (1 * 2)] end
+        2, 1 -> [(0 * 0), (-1 * 0), (-1 * 1), (0 * -2), (-1 * -2)] end
+        2, 3 -> [(0 * 0), (1 * 0), (1 * 1), (0 * -2), (1 * -2)] end
+        3, 2 -> [(0 * 0), (-1 * 0), (-1 * -1), (0 * 2), (-1 * 2)] end
+        3, 0 -> [(0 * 0), (-1 * 0), (-1 * -1), (0 * 2), (-1 * 2)] end
+        _, _ -> [(0 * 0), (1 * 0), (1 * 1), (0 * -2), (1 * -2)] end
+    end
+end
+
+let kicks_i
+    : Int -> Int -> List Cell
+    = match
+        0, 1 -> [(0 * 0), (-2 * 0), (1 * 0), (-2 * -1), (1 * 2)] end
+        1, 0 -> [(0 * 0), (2 * 0), (-1 * 0), (2 * 1), (-1 * -2)] end
+        1, 2 -> [(0 * 0), (-1 * 0), (2 * 0), (-1 * 2), (2 * -1)] end
+        2, 1 -> [(0 * 0), (1 * 0), (-2 * 0), (1 * -2), (-2 * 1)] end
+        2, 3 -> [(0 * 0), (2 * 0), (-1 * 0), (2 * 1), (-1 * -2)] end
+        3, 2 -> [(0 * 0), (-2 * 0), (1 * 0), (-2 * -1), (1 * 2)] end
+        3, 0 -> [(0 * 0), (1 * 0), (-2 * 0), (1 * -2), (-2 * 1)] end
+        _, _ -> [(0 * 0), (-1 * 0), (2 * 0), (-1 * 2), (2 * -1)] end
+    end
+end
+
+# SRS-X half turn kicks, from Heboris
+# Indexed by the rotation the piece is in.
+let kicks_180
+    : Int -> Int -> List Cell
+    = match
+        0, 0 -> [(0 * 0), (1 * 0), (2 * 0), (1 * -1), (2 * -1), (-1 * 0), (-2 * 0), (-1 * -1), (-2 * -1), (0 * 1), (3 * 0), (-3 * 0)] end
+        0, 1 -> [(0 * 0), (0 * -1), (0 * -2), (-1 * -1), (-1 * -2), (0 * 1), (0 * 2), (-1 * 1), (-1 * 2), (1 * 0), (0 * -3), (0 * 3)] end
+        0, 2 -> [(0 * 0), (-1 * 0), (-2 * 0), (-1 * 1), (-2 * 1), (1 * 0), (2 * 0), (1 * 1), (2 * 1), (0 * -1), (-3 * 0), (3 * 0)] end
+        0, _ -> [(0 * 0), (0 * -1), (0 * -2), (1 * -1), (1 * -2), (0 * 1), (0 * 2), (1 * 1), (1 * 2), (-1 * 0), (0 * -3), (0 * 3)] end
+        1, 0 -> [(0 * 0), (-1 * 0), (-2 * 0), (1 * 0), (2 * 0), (0 * -1)] end
+        1, 1 -> [(0 * 0), (0 * -1), (0 * -2), (0 * 1), (0 * 2), (-1 * 0)] end
+        1, 2 -> [(0 * 0), (1 * 0), (2 * 0), (-1 * 0), (-2 * 0), (0 * 1)] end
+        _, _ -> [(0 * 0), (0 * -1), (0 * -2), (0 * 1), (0 * 2), (1 * 0)] end
+    end
+end
+
+# the tests to make for a piece turning from rotation `r` to rotation `n`
+let kicks
+    : Int -> Int -> Int -> List Cell
+    = fn k, r, n ->
+        cond (eq k 1) [(0 * 0)]
+      < cond (eq (mod (add (sub n r) 4) 4) 2) (kicks_180 (cond (eq k 0) 1 0) r)
+      < cond (eq k 0) (kicks_i r n) (kicks_jlstz r n)
+    end
+end
+
+# turns a piece by `d` quarter turns (1 clockwise, 2 half, 3 counter-clockwise), or leaves it
+let turned
+    : Int -> Board -> Piece -> Piece
+    = fn d, b, p ->
+        turned_to b p < mod (add d < rot_of p) 4
+    end
+end
+
+let turned_to
+    : Board -> Piece -> Int -> Piece
+    = fn b, p, n ->
+        or_else p < Search:find (fits b)
+            < map (fn kk -> (kind_of p * (n * (add (px p) (fst kk) * sub (py p) (rst kk)))) end)
+                  (kicks (kind_of p) (rot_of p) n)
+    end
+end
+
+# ======================================================================================
+# Game state
+# ======================================================================================
+
+let with_game a
+    : (Board -> Piece -> Int -> Bool -> List Int -> Gen -> Int -> Int -> Bool -> a) -> Game -> a
+    = fn f -> match
+        (b * p * h * u * q * g * s * l * o) -> f b p h u q g s l o end
+    end end
+end
+
+let mk
+    : Board -> Piece -> Int -> Bool -> List Int -> Gen -> Int -> Int -> Bool -> Game
+    = fn b, p, h, u, q, g, s, l, o -> (b * p * h * u * q * g * s * l * o) end
+end
+
+let board_of
+    : Game -> Board
+    = with_game (fn b, p, h, u, q, g, s, l, o -> b end)
+end
+
+let piece_of
+    : Game -> Piece
+    = with_game (fn b, p, h, u, q, g, s, l, o -> p end)
+end
+
+let hold_of
+    : Game -> Int
+    = with_game (fn b, p, h, u, q, g, s, l, o -> h end)
+end
+
+let used_of
+    : Game -> Bool
+    = with_game (fn b, p, h, u, q, g, s, l, o -> u end)
+end
+
+let queue_of
+    : Game -> List Int
+    = with_game (fn b, p, h, u, q, g, s, l, o -> q end)
+end
+
+let gen_of
+    : Game -> Gen
+    = with_game (fn b, p, h, u, q, g, s, l, o -> g end)
+end
+
+let score_of
+    : Game -> Int
+    = with_game (fn b, p, h, u, q, g, s, l, o -> s end)
+end
+
+let lines_of
+    : Game -> Int
+    = with_game (fn b, p, h, u, q, g, s, l, o -> l end)
+end
+
+let is_over
+    : Game -> Bool
+    = with_game (fn b, p, h, u, q, g, s, l, o -> o end)
+end
+
+let level_of
+    : Int -> Int
+    = fn l -> min 15 (succ (div l 10)) end
+end
+
+# milliseconds per row of gravity
+let interval
+    : Int -> Int
+    = fn lv -> nth_or 7 (pred lv) [1000, 793, 618, 473, 355, 262, 190, 135, 94, 64, 43, 28, 18, 11, 7] end
+end
+
+let line_score
+    : Int -> Int -> Int
+    = fn n, lv -> mul lv (nth_or 0 n [0, 100, 300, 500, 800]) end
+end
+
+# how long a row of gravity takes in this game: this is also the lock delay
+let interval_of
+    : Game -> Int
+    = fn g -> interval (level_of < lines_of g) end
+end
+
+# resting on something: the piece cannot fall any further
+let grounded
+    : Game -> Bool
+    = with_game (fn b, p, h, u, q, g, s, l, o -> and (not o) (not (fits b (moved 0 1 p))) end)
+end
+
+# The time (ms) at which a resting piece locks, or -1 while it is not resting.
+# `ld` is the deadline before the change from game `g` to `g2`: it holds while the piece sits
+# still, and restarts (infinite lock delay) whenever the piece has moved or turned, or has just landed.
+let lock_after
+    : Int -> Int -> Game -> Game -> Int
+    = fn now, ld, g, g2 ->
+        cond (not (grounded g2)) -1
+      < cond (or (ls ld 0) (not (eq (piece_of g) (piece_of g2)))) (add now (interval_of g2))
+        ld
+    end
+end
+
+# the deadline for a game that has just changed completely (a new piece)
+let lock_for
+    : Int -> Game -> Int
+    = fn now, g -> cond (grounded g) (add now (interval_of g)) -1 end
+end
+
+# ---- the 7-bag ----
+
+# keeps at least 2 kinds queued by appending a freshly shuffled bag when it runs low
+let refill
+    : List Int -> Gen -> (List Int * Gen)
+    = fn q, g -> cond (ls (len q) 2) (add_bag q (Rng:shuffle (range 0 7) g)) (q * g) end
+end
+
+let add_bag
+    : List Int -> (List Int * Gen) -> (List Int * Gen)
+    = fn q, r -> (append q (fst r) * rst r) end
+end
+
+# ---- spawning ----
+
+# a new piece at the top, dropped one row if it can; True if it did not even fit
+let spawn
+    : Int -> Board -> (Piece * Bool)
+    = fn k, b -> spawn_at b (k * (0 * (3 * 1))) end
+end
+
+let spawn_at
+    : Board -> Piece -> (Piece * Bool)
+    = fn b, p ->
+        cond (fits b p)
+            (cond (fits b (moved 0 1 p)) (moved 0 1 p * Bool:False) (p * Bool:False))
+            (p * Bool:True)
+    end
+end
+
+# brings in the next piece from the queue
+let start_piece
+    : Bool -> Game -> Game
+    = fn used -> with_game (fn b, p, h, u, q, g, s, l, o ->
+        deal b h used s l o (refill q g)
+    end) end
+end
+
+let deal
+    : Board -> Int -> Bool -> Int -> Int -> Bool -> (List Int * Gen) -> Game
+    = fn b, h, used, s, l, o, r -> deal_from b h used s l o (fst r) (rst r) end
+end
+
+let deal_from
+    : Board -> Int -> Bool -> Int -> Int -> Bool -> List Int -> Gen -> Game
+    = match
+        b, h, used, s, l, o, List:Cons (k * rest), g -> deal_kind b h used s l o k rest g end
+        b, h, used, s, l, o, [], g                   -> deal_kind b h used s l o 0 [] g end
+    end
+end
+
+let deal_kind
+    : Board -> Int -> Bool -> Int -> Int -> Bool -> Int -> List Int -> Gen -> Game
+    = fn b, h, used, s, l, o, k, rest, g ->
+        deal_with (spawn k b) b h used s l o rest g
+    end
+end
+
+let deal_with
+    : (Piece * Bool) -> Board -> Int -> Bool -> Int -> Int -> Bool -> List Int -> Gen -> Game
+    = fn sp, b, h, used, s, l, o, rest, g ->
+        mk b (fst sp) h used rest g s l (or o (rst sp))
+    end
+end
+
+let new_game
+    : Gen -> Game
+    = fn g -> start_piece Bool:False (mk empty_board (0 * (0 * (3 * 1))) -1 Bool:False [] g 0 0 Bool:False) end
+end
+
+# ---- actions ----
+
+# changes the falling piece (nothing happens once the game is over)
+let on_piece
+    : (Board -> Piece -> Piece) -> Game -> Game
+    = fn f -> with_game (fn b, p, h, u, q, g, s, l, o ->
+        cond o (mk b p h u q g s l o) (mk b (f b p) h u q g s l o)
+    end) end
+end
+
+let shift
+    : Int -> Int -> Game -> Game
+    = fn dx, dy -> on_piece (fn b, p -> cond (fits b (moved dx dy p)) (moved dx dy p) p end) end
+end
+
+let gravity
+    : Game -> Game
+    = shift 0 1
+end
+
+let gravity_n
+    : Int -> Game -> Game
+    = fn n, g -> cond (lse n 0) g (gravity_n (pred n) (gravity g)) end
+end
+
+let rotate
+    : Int -> Game -> Game
+    = fn d -> on_piece (turned d) end
+end
+
+let soft_drop
+    : Game -> Game
+    = with_game (fn b, p, h, u, q, g, s, l, o ->
+        cond (and (not o) (fits b (moved 0 1 p)))
+            (mk b (moved 0 1 p) h u q g (succ s) l o)
+            (mk b p h u q g s l o)
+    end)
+end
+
+# the piece falls all the way, locks, full lines go, and the next piece comes in
+let hard_drop
+    : Game -> Game
+    = with_game (fn b, p, h, u, q, g, s, l, o ->
+        cond o (mk b p h u q g s l o) (land_piece (fall_to b p) b p h u q g s l o)
+    end)
+end
+
+let land_piece
+    : Piece -> Board -> Piece -> Int -> Bool -> List Int -> Gen -> Int -> Int -> Bool -> Game
+    = fn d, b, p, h, u, q, g, s, l, o ->
+        locked d (clear_lines (lock b d)) (sub (py d) (py p)) h u q g s l o
+    end
+end
+
+let locked
+    : Piece -> (Int * Board) -> Int -> Int -> Bool -> List Int -> Gen -> Int -> Int -> Bool -> Game
+    = fn d, r, dist, h, u, q, g, s, l, o ->
+        start_piece Bool:False
+            (mk (rst r) d h u q g
+                (add s (add (mul 2 dist) (line_score (fst r) (level_of l))))
+                (add l (fst r))
+                (or o (Search:all (fn c -> ls (rst c) hidden end) (cells d))))
+    end
+end
+
+let hold_piece
+    : Game -> Game
+    = with_game (fn b, p, h, u, q, g, s, l, o ->
+        cond (or u o) (mk b p h u q g s l o)
+      < cond (ls h 0)
+            (start_piece Bool:True (mk b p (kind_of p) Bool:True q g s l o))
+            (swap_hold (spawn h b) b p q g s l o)
+    end)
+end
+
+let swap_hold
+    : (Piece * Bool) -> Board -> Piece -> List Int -> Gen -> Int -> Int -> Bool -> Game
+    = fn sp, b, p, q, g, s, l, o ->
+        mk b (fst sp) (kind_of p) Bool:True q g s l (or o (rst sp))
+    end
+end
+
+let apply
+    : Act -> Game -> Game
+    = match
+        Act:MoveL   -> shift -1 0 end
+        Act:MoveR   -> shift 1 0 end
+        Act:RotCcw  -> rotate 3 end
+        Act:RotFlip -> rotate 2 end
+        Act:RotCw   -> rotate 1 end
+        Act:Soft    -> soft_drop end
+        Act:Hard    -> hard_drop end
+        Act:Hold    -> hold_piece end
+        _           -> id end
+    end
+end
+
+# ======================================================================================
+# Colours and pieces of the picture
+# ======================================================================================
+
+# the colour of a kind + 1 (the value stored on the board)
+let rgb_of
+    : Int -> List Int
+    = match
+        1 -> [0, 215, 225] end
+        2 -> [235, 210, 0] end
+        3 -> [165, 70, 225] end
+        4 -> [70, 205, 80] end
+        5 -> [230, 60, 70] end
+        6 -> [70, 110, 240] end
+        7 -> [240, 150, 40] end
+        _ -> [88, 90, 104] end
+    end
+end
+
+let solid
+    : Int -> String
+    = fn v -> Ansi:sgr (List:Cons (48 * List:Cons (2 * rgb_of v))) "  " end
+end
+
+let ghost
+    : Int -> String
+    = fn v -> Ansi:sgr (List:Cons (38 * List:Cons (2 * map (fn c -> div (mul 3 c) 5 end) (rgb_of v)))) "▒▒" end
+end
+
+let empty_cell
+    : String
+    = Ansi:sgr [38, 2, 52, 56, 72] " ·"
+end
+
+let wall_bg
+    : List Int
+    = [48, 2, 70, 78, 108]
+end
+
+let wall
+    : String
+    = Ansi:sgr wall_bg " "
+end
+
+let label
+    : String -> String
+    = fn s -> Ansi:sgr [1, 38, 2, 185, 190, 215] s end
+end
+
+let key_hint
+    : String -> String -> String
+    = fn k, what -> append (Ansi:sgr [1, 38, 2, 235, 235, 245] k) (Ansi:dim what) end
+end
+
+# pad on the left / right to a width, counting only what is visible
+let fit_r
+    : Int -> String -> String
+    = fn w, s -> append (spaces < max 0 < sub w < Ansi:visible_length s) s end
+end
+
+let fit_l
+    : Int -> String -> String
+    = fn w, s -> append s (spaces < max 0 < sub w < Ansi:visible_length s) end
+end
+
+let center
+    : Int -> String -> String
+    = fn cols, s -> append (spaces < max 0 (div (sub cols < Ansi:visible_length s) 2)) s end
+end
+
+# ---- preview of a kind (HOLD and NEXT) ----
+
+let norm
+    : List Cell -> List Cell
+    = fn cs -> shift_to (foldl min 9 (map fst cs)) (foldl min 9 (map rst cs)) cs end
+end
+
+let shift_to
+    : Int -> Int -> List Cell -> List Cell
+    = fn mx, my, cs -> map (fn c -> (sub (fst c) mx * sub (rst c) my) end) cs end
+end
+
+let span
+    : List Cell -> Int
+    = fn cs -> succ (foldl max 0 (map fst cs)) end
+end
+
+# kind -1 is nothing; v is the value to draw it in (0 is grey)
+let preview_row
+    : Int -> Int -> Int -> String
+    = fn k, v, r ->
+        cond (ls k 0) (spaces 8) (preview_cells (norm (base k)) v r)
+    end
+end
+
+let preview_cells
+    : List Cell -> Int -> Int -> String
+    = fn cs, v, r -> flatten [
+        spaces (sub 4 (span cs)),
+        flat_map (fn x -> cond (Search:contains (x * r) cs) (solid v) "  " end) (range 0 (span cs)),
+        spaces (sub 4 (span cs))
+    ] end
+end
+
+# ---- the title ----
+
+let title
+    : String
+    = Str:join " " < map (fn lc -> Ansi:sgr (List:Cons (1 * List:Cons (38 * List:Cons (2 * rgb_of (rst lc))))) (fst lc) end)
+        [("T" * 5), ("E" * 7), ("T" * 2), ("R" * 4), ("I" * 1), ("S" * 6)]
+end
+
+# ---- the two side panels ----
+
+let left_panel
+    : Int -> Bool -> Int -> String
+    = fn h, u, i ->
+        append
+            (fit_r 10
+                (cond (eq i 0) (label "HOLD")
+               < cond (and (gre i 1) (lse i 2)) (preview_row h (cond u 0 (succ h)) (pred i))
+               < cond (eq i 18) (Ansi:dim "7-bag")
+               < cond (eq i 19) (Ansi:dim "SRS-X")
+               < cond (eq i 20) (Ansi:dim "inf lock")
+                 ""))
+            "  "
+    end
+end
+
+let right_panel
+    : Int -> Int -> Int -> Int -> Int -> String
+    = fn nxt, s, l, lv, i ->
+        fit_l 18 < append "  " <
+            cond (eq i 0) (label "NEXT")
+          < cond (and (gre i 1) (lse i 2)) (preview_row nxt (succ nxt) (pred i))
+          < cond (eq i 4) (label "SCORE")
+          < cond (eq i 5) (Ansi:bold < show s)
+          < cond (eq i 7) (label "LINES")
+          < cond (eq i 8) (Ansi:bold < show l)
+          < cond (eq i 10) (label "LEVEL")
+          < cond (eq i 11) (Ansi:bold < show lv)
+          < cond (eq i 13) (key_hint "j l    " "move")
+          < cond (eq i 14) (key_hint "u o    " "rotate")
+          < cond (eq i 15) (key_hint "i      " "rotate 180")
+          < cond (eq i 16) (key_hint "k      " "soft drop")
+          < cond (eq i 17) (key_hint "space  " "hard drop")
+          < cond (eq i 18) (key_hint "c      " "hold")
+          < cond (eq i 19) (key_hint "q      " "quit")
+            ""
+    end
+end
+
+# ---- the well ----
+
+let board_cell
+    : Board -> List Cell -> List Cell -> Int -> Int -> Int -> String
+    = fn b, pc, gc, v, y, x ->
+        cond (Search:contains (x * y) pc) (solid v)
+      < cond (Search:contains (x * y) gc) (ghost v)
+      < cond (gr (at b x y) 0) (solid (at b x y)) empty_cell
+    end
+end
+
+let well_row
+    : Board -> List Cell -> List Cell -> Int -> Int -> String
+    = fn b, pc, gc, v, y ->
+        flat_map (board_cell b pc gc v y) (range 0 width)
+    end
+end
+
+let over_style
+    : String -> String
+    = Ansi:sgr [1, 38, 2, 255, 255, 255, 48, 2, 150, 30, 40]
+end
+
+# the game over box sits on rows 11 to 14 of the well (rows of the board, hidden ones included)
+let over_row
+    : Int -> String
+    = match
+        11 -> over_style "                    " end
+        12 -> over_style " G A M E    O V E R " end
+        13 -> over_style " r restart · q quit " end
+        14 -> over_style "                    " end
+        _  -> "" end
+    end
+end
+
+let visible_row
+    : Game -> Int -> String
+    = fn g, y ->
+        flatten [
+            left_panel (hold_of g) (used_of g) (sub y top),
+            wall,
+            cond (and (is_over g) (neq "" (over_row y)))
+                (over_row y)
+                (well_row (board_of g) (cells (piece_of g)) (cells (fall_to (board_of g) (piece_of g))) (succ < kind_of < piece_of g) y),
+            wall,
+            right_panel (nth_or 0 0 < queue_of g) (score_of g) (lines_of g) (level_of < lines_of g) (sub y top)
+        ]
+    end
+end
+
+let bottom
+    : String
+    = append (spaces 12) (Ansi:sgr wall_bg (spaces 22))
+end
+
+let frame
+    : Int -> Game -> List String
+    = fn cols, g -> map (center_in cols) (flatten [
+        [center 54 title],
+        map (visible_row g) (range top height),
+        [bottom]
+    ]) end
+end
+
+# every line gets the same indent, which centers the whole picture
+let center_in
+    : Int -> String -> String
+    = fn cols, s -> append (spaces < max 0 (div (sub cols 52) 2)) s end
+end
+
+# ======================================================================================
+# Putting lines on the screen
+# ======================================================================================
+
+# each line goes on its own row, with whatever was there wiped first
+let place
+    : Int -> List String -> String
+    = match
+        _, []                  -> [] end
+        row, List:Cons (l * ls) ->
+            append (Ansi:move_to row 1) (append Ansi:clear_line (append l (place (succ row) ls)))
+    end end
+end
+
+let too_small
+    : Int -> Int -> String
+    = fn cols, rows -> flatten [
+        Ansi:clear_screen,
+        Ansi:move_to 1 1,
+        Ansi:sgr [1, 38, 2, 252, 214, 48] < flatten [
+            "Please make the window larger: this needs 54x23, it is ",
+            show cols, "x", show rows
+        ]
+    ] end
+end
+
+let draw
+    : Game -> IO Unit
+    = fn g -> bind (fn sz -> paint (fst sz) (rst sz) g end) Term:size end
+end
+
+let paint
+    : Int -> Int -> Game -> IO Unit
+    = fn cols, rows, g ->
+        cond (or (ls cols 54) (ls rows 23))
+            (print < too_small cols rows > then flush)
+            (print < place (max 1 < succ < div (sub rows 23) 2) < frame cols g > then flush)
+    end
+end
+
+let clear
+    : IO Unit
+    = print Ansi:clear_screen
+end
+
+# ======================================================================================
+# Keys
+# ======================================================================================
+
+let act_of_char
+    : Char -> Act
+    = match
+        'j' -> Act:MoveL end
+        'l' -> Act:MoveR end
+        'u' -> Act:RotCcw end
+        'i' -> Act:RotFlip end
+        'o' -> Act:RotCw end
+        'k' -> Act:Soft end
+        ' ' -> Act:Hard end
+        'c' -> Act:Hold end
+        'q' -> Act:Quit end
+        'r' -> Act:Restart end
+        _   -> Act:Ignore end
+    end
+end
+
+let act_of_key
+    : Key -> Act
+    = match
+        Key:Ch c    -> act_of_char (Str:char_to_lower c) end
+        Key:Ctrl _  -> Act:Quit end
+        Key:Eof     -> Act:Quit end
+        Key:Escape  -> Act:Quit end
+        Key:Resize  -> Act:Redraw end
+        _           -> Act:Ignore end
+    end
+end
+
+# ======================================================================================
+# The game loop
+# ======================================================================================
+
+# milliseconds since the game started
+let now_ms
+    : Float -> IO Int
+    = fn t0 -> fmap (fn t -> float_to_int (mul 1000.0 (sub t t0)) end) Time:monotonic end
+end
+
+# draw, then wait for a key, for gravity or for the lock timer, whichever comes first.
+# `dl` is when the next gravity step is due, `ld` when the resting piece locks (-1: not resting).
+let loop
+    : Float -> Int -> Int -> Game -> IO Unit
+    = fn t0, dl, ld, g -> draw g > then < wait t0 dl ld g end
+end
+
+let wait
+    : Float -> Int -> Int -> Game -> IO Unit
+    = fn t0, dl, ld, g ->
+        now_ms t0 > bind fn now ->
+            cond (and (gre ld 0) (gre now ld)) (fresh t0 (hard_drop g))
+          < cond (gre now dl) (tick t0 now dl ld g)
+            (Term:read_key_timeout (sub (wake dl ld) now) > bind < fn k -> step t0 dl ld g (act_of_key k) end)
+        end
+    end
+end
+
+# the next time something is due
+let wake
+    : Int -> Int -> Int
+    = fn dl, ld -> cond (ls ld 0) dl (min dl ld) end
+end
+
+# gravity: every step that is due, at once
+let tick
+    : Float -> Int -> Int -> Int -> Game -> IO Unit
+    = fn t0, now, dl, ld, g ->
+        ticked t0 now dl ld (interval_of g) (succ < div (sub now dl) (interval_of g)) g
+    end
+end
+
+let ticked
+    : Float -> Int -> Int -> Int -> Int -> Int -> Game -> IO Unit
+    = fn t0, now, dl, ld, iv, n, g ->
+        advance t0 now (add dl (mul n iv)) ld g (gravity_n n g)
+    end
+end
+
+# carry on with the game `g2` that followed from `g`
+let advance
+    : Float -> Int -> Int -> Int -> Game -> Game -> IO Unit
+    = fn t0, now, dl, ld, g, g2 -> loop t0 dl (lock_after now ld g g2) g2 end
+end
+
+let step
+    : Float -> Int -> Int -> Game -> Act -> IO Unit
+    = fn t0, dl, ld, g -> match
+        Act:Quit    -> return unit end
+        Act:Ignore  -> wait t0 dl ld g end
+        Act:Redraw  -> clear > then < loop t0 dl ld g end
+        Act:Restart -> cond (is_over g) (fresh t0 (new_game (gen_of g))) (wait t0 dl ld g) end
+        Act:Hard    -> fresh t0 (hard_drop g) end
+        Act:Hold    -> fresh t0 (hold_piece g) end
+        act         -> now_ms t0 > bind fn now -> advance t0 now dl ld g (apply act g) end end
+    end end
+end
+
+# a new piece starts its gravity clock and lock timer afresh
+let fresh
+    : Float -> Game -> IO Unit
+    = fn t0, g -> now_ms t0 > bind fn now -> loop t0 (add now (interval_of g)) (lock_for now g) g end end
+end
+
+let play
+    : Gen -> IO Unit
+    = fn g -> Time:monotonic > bind fn t0 -> loop t0 (interval 1) -1 (new_game g) end end
+end
+
+let setup
+    : IO Unit
+    = print < flatten [Ansi:alt_screen_on, Ansi:hide_cursor, Ansi:clear_screen] > then flush
+end
+
+let teardown
+    : IO Unit
+    = print < flatten [Ansi:reset, Ansi:show_cursor, Ansi:alt_screen_off] > then flush
+end
+
+let main
+    : IO Int
+    = bind (fn g ->
+        setup > then <
+        Term:with_raw_mode < play g > then
+        teardown > then <
+        return 0
+    end) Rng:from_os
+end
