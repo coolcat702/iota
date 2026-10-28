@@ -137,7 +137,7 @@ end
 # the position of the first occurrence in the string
 let find
     : String -> String -> Maybe Int
-    = flip (comp flip find_from) 0
+    = flip (flip ~ find_from) 0
 end
 
 let find_from
@@ -189,12 +189,12 @@ end
 
 let trim_end
     : String -> String
-    = comp (comp reverse trim_start) reverse
+    = reverse ~ trim_start ~ reverse
 end
 
 let trim
     : String -> String
-    = comp trim_end trim_start
+    = trim_end ~ trim_start
 end
 
 # ---- splitting ----
@@ -202,7 +202,7 @@ end
 # Splits at every character satisfying the predicate: "a,b,,c" gives ["a", "b", "", "c"].
 let split_by
     : (Char -> Bool) -> String -> List String
-    = fn p, s -> split_by_step p ((take_while < comp not p) (drop_until p s)) s end
+    = fn p, s -> split_by_step p ((take_while < not ~ p) (drop_until p s)) s end
 end
 
 let split_by_step
@@ -215,7 +215,7 @@ end
 
 let drop_until
     : (Char -> Bool) -> String -> String
-    = comp drop_while (comp not)
+    = drop_while ~ (not ~)
 end
 
 let split
@@ -247,7 +247,7 @@ end
 # Lines, with "\n" or "\r\n" endings; a final line break does not add an empty line.
 let lines
     : String -> List String
-    = comp (map strip_cr) (comp drop_last_empty < split '\n')
+    = map strip_cr ~ drop_last_empty ~ split '\n'
 end
 
 let strip_cr
@@ -266,13 +266,13 @@ end
 
 let unlines
     : List String -> String
-    = comp flatten (map < flip append "\n")
+    = flatten ~ (map < flip append "\n")
 end
 
 # Splits on runs of white space.
 let words
     : String -> List String
-    = comp (filter < comp not is_empty) (split_by is_space)
+    = (filter < not ~ is_empty) ~ split_by is_space
 end
 
 let unwords

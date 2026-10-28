@@ -36,7 +36,7 @@ end
 # The non-empty parts between slashes: "/a//b/" gives ["a", "b"].
 let components
     : String -> List String
-    = comp (filter < comp not Str:is_empty) (Str:split '/')
+    = (filter < not ~ Str:is_empty) ~ Str:split '/'
 end
 
 # Resolves "." and ".." textually (without looking at the disk, so symlinks are not
@@ -81,7 +81,7 @@ end
 # the last component: "/a/b/c.txt" gives "c.txt"; "/" and "" give ""
 let basename
     : String -> String
-    = comp map_last_or_empty components end
+    = map_last_or_empty ~ components
 end
 
 let map_last_or_empty
@@ -114,7 +114,7 @@ end
 # leading dot of a hidden file: "a/b.txt" is `Val "txt"`, ".bashrc" and "Makefile" are `Nil`.
 let extension
     : String -> Maybe String
-    = comp ext_of basename
+    = ext_of ~ basename
 end
 
 let ext_of

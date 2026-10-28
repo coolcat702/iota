@@ -61,7 +61,7 @@ end
 
 let dim_color
     : List Int -> List Int
-    = map (mul 2 > comp < flip div 5)
+    = map (mul 2 > flip div 5 ~)
 end
 
 let floor_bg
@@ -308,10 +308,10 @@ end
 
 let hint_lines
     : Int -> String -> List String
-    = fn cols, text -> two_lines (map (comp (center cols) Ansi:dim) (wrap (min 70 (sub cols 6)) text)) end
+    = fn cols, text -> two_lines < map (center cols ~ Ansi:dim) (wrap (min 70 < sub cols 6) text) end
 with two_lines
     : List String -> List String
-    = comp (take 2) (flip append ["", ""])
+    = take 2 ~ flip append ["", ""]
 end
 
 # don't ask me to explain this
@@ -694,7 +694,7 @@ end
 let first_unfinished
     : List Int -> Int
     = fn progress ->
-        map_nil_same (pred total_levels) (Search:find_index (eq 0) progress)
+        or_else (pred total_levels) (Search:find_index (eq 0) progress)
     end
 end
 
@@ -756,7 +756,7 @@ end
 
 let widest
     : List String -> Int
-    = comp (foldl max 0) (map Ansi:visible_length)
+    = foldl max 0 ~ map Ansi:visible_length
 end
 
 let item_lines
@@ -784,7 +784,7 @@ let menu
     : String -> List String -> Int -> IO Int
     = fn subtitle, items, sel ->
         show_lines (fn cols, rows -> menu_lines cols subtitle items sel end) > then <
-        bind (comp (menu_step subtitle items sel) menu_act) Term:read_key
+        bind (menu_step subtitle items sel ~ menu_act) Term:read_key
     end
 end
 

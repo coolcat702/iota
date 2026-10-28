@@ -40,22 +40,22 @@ end
 
 let size a
     : HashSet a -> Int
-    = comp HashMap:size inner
+    = HashMap:size ~ inner
 end
 
 let is_empty a
     : HashSet a -> Bool
-    = comp HashMap:is_empty inner
+    = HashMap:is_empty ~ inner
 end
 
 let member (a : Hashable, Eqable)
     : a -> HashSet a -> Bool
-    = comp (flip comp inner) HashMap:member
+    = (~ inner) ~ HashMap:member
 end
 
 let insert (a : Hashable, Eqable)
     : a -> HashSet a -> HashSet a
-    = flip (comp comp (comp (comp HashSet:HS) (flip HashMap:insert unit))) inner
+    = flip (comp ~ (HashSet:HS ~) ~ (flip HashMap:insert unit)) inner
 end
 
 let remove (a : Hashable, Eqable)
@@ -71,7 +71,7 @@ end
 
 let to_list a
     : HashSet a -> List a
-    = comp HashMap:keys inner
+    = HashMap:keys ~ inner
 end
 
 let filter (a : Hashable, Eqable)
@@ -87,19 +87,19 @@ end
 # the elements of both sets
 let intersection (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> HashSet a
-    = flip < comp filter (flip member)
+    = flip < filter ~ flip member
 end
 
 # the elements of the first set that are not in the second
 let difference (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> HashSet a
-    = flip < comp filter < comp (comp not) (flip member)
+    = flip < filter ~ (not ~) ~ (flip member)
 end
 
 # every element of the first set is in the second
 let is_subset (a : Hashable, Eqable)
     : HashSet a -> HashSet a -> Bool
-    = fn x, y -> fold (flip < comp and < flip member y) Bool:True x end
+    = fn x, y -> fold (flip < and ~ flip member y) Bool:True x end
 end
 
 instance Showable (HashSet a) is

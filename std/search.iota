@@ -70,7 +70,7 @@ end
 # `contains x xs`
 let contains (a : Eqable)
     : a -> List a -> Bool
-    = comp any eq
+    = any ~ eq
 end
 
 let last a
@@ -103,7 +103,7 @@ end
 # `partition p xs` is (the elements satisfying p, the rest), each in order.
 let partition a
     : (a -> Bool) -> List a -> (List a * List a)
-    = fn p, xs -> (filter p xs * filter (comp not p) xs) end
+    = fn p, xs -> (filter p xs * filter (not ~ p) xs) end
 end
 
 # The smallest / largest element, `Nil` for an empty list.
@@ -120,12 +120,12 @@ end
 # the element for which `key` is smallest (the first one on ties)
 let minimum_on a (k : Orderable)
     : (a -> k) -> List a -> Maybe a
-    = comp pick (over ls)
+    = pick ~ over ls
 end
 
 let maximum_on a (k : Orderable)
     : (a -> k) -> List a -> Maybe a
-    = comp pick (over gr)
+    = pick ~ over gr
 end
 
 # keeps the winner of `better x y` ("x beats y") over the whole list

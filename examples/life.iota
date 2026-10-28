@@ -65,9 +65,7 @@ end
 
 let count
     : World -> Cell -> Int
-    = fn w, c ->
-        len (filter (flip member w) (neighbours c))
-    end
+    = fork2 (len ~ filter) (flip member) neighbours
 end
 
 let survives
@@ -84,7 +82,7 @@ let step
     : World -> World
     = fn w ->
         filter
-            (fn c -> survives (member c w) (count w c) end)
+            (fork survives (flip member w) (flip count w))
             (nub < append w < bind neighbours w)
     end
 end
@@ -92,8 +90,7 @@ end
 let advance
     : Int -> World -> World
     = fn n, w ->
-        cond (lse n 0) w
-            (advance (pred n) (step w))
+        cond (lse n 0) w (advance (pred n) (step w))
     end
 end
 
@@ -204,7 +201,7 @@ end
 let paint
     : Int -> Int -> Int -> World -> Int -> Int -> Int -> Int -> String -> String -> IO Unit
     = fn cols, rows, g, w, vx, vy, cx, cy, input, message ->
-        cond (or (ls cols 84) (ls rows (add height 9))) (
+        cond (or (ls cols 84) (ls rows < add height 9)) (
             print (flatten [
                 Ansi:move_to 1 1,
                 Ansi:clear_line,
@@ -245,8 +242,8 @@ let words
         List:Cons (' ' * cs) -> words cs end
         s ->
             List:Cons (
-                take_while (neq ' ') s *
-                words (drop_word s)
+                take_while (neq ' ') s
+              * words (drop_word s)
             )
         end
     end
@@ -254,9 +251,7 @@ end
 
 let erase_last
     : String -> String
-    = fn s ->
-        take (max 0 < pred < len s) s
-    end
+    = join < take ~ max 0 ~ pred ~ len
 end
 
 # ---- event loop ----
@@ -268,9 +263,9 @@ let loop
     : Int -> World -> Int -> Int -> Int -> Int -> String -> String -> IO Unit
     = fn g, w, vx, vy, cx, cy, input, message ->
         draw g w vx vy cx cy input message > then <
-        Term:read_key > bind (fn key ->
+        Term:read_key > bind fn key ->
             handle_key g w vx vy cx cy input message key
-        end)
+        end
     end
 end
 
@@ -434,23 +429,23 @@ end
 
 let setup
     : IO Unit
-    = print (flatten [
+    = print < flatten [
         Ansi:alt_screen_on,
         Ansi:hide_cursor,
         Ansi:clear_screen
-    ]) > then flush
+    ] > then flush
 end
 
 let teardown
     : IO Unit
-    = print (flatten [
+    = print < flatten [
         Ansi:reset,
         Ansi:show_cursor,
         Ansi:alt_screen_off
-    ]) > then flush
+    ] > then flush
 end
 
 let main
     : IO Unit
-    = setup > then < Term:with_raw_mode (loop 0 glider 0 0 0 0 "" "") > then teardown
+    = setup > then < Term:with_raw_mode < loop 0 glider 0 0 0 0 "" "" > then teardown
 end

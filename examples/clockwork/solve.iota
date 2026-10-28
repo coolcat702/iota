@@ -193,7 +193,7 @@ end
 
 let is_gear
     : Char -> Bool
-    = fork or Engine:is_gate (comp (ls -1) Engine:plate_group)
+    = fork or Engine:is_gate (ls -1 ~ Engine:plate_group)
 end
 
 let is_spike
@@ -204,12 +204,12 @@ end
 # turns to finish, or -1
 let turns_of
     : CwDef -> Int
-    = comp (comp (comp solution_turns fst) (flip solve Bool:True)) Engine:build
+    = ((solution_turns ~ fst) ~ flip solve Bool:True) ~ Engine:build
 end
 
 let turns_of_nodash
     : CwDef -> Int
-    = comp (comp (comp solution_turns fst) (flip solve Bool:False)) Engine:build
+    = ((solution_turns ~ fst) ~ flip solve Bool:False) ~ Engine:build
 end
 
 let solution_turns
@@ -273,8 +273,8 @@ let run_args
         []                                        -> run_all 1 Levels:all Bool:True end
         List:Cons ("check" * _)                   -> check_all 1 Levels:all end
         List:Cons ("file" * List:Cons (path * _)) -> run_file path end
-        List:Cons (n * [])                        -> run_one (map_nil_same 1 < Str:parse_int n) Bool:True end
-        List:Cons (n * List:Cons (_ * _))         -> run_one (map_nil_same 1 < Str:parse_int n) Bool:False end
+        List:Cons (n * [])                        -> run_one (or_else 1 < Str:parse_int n) Bool:True end
+        List:Cons (n * List:Cons (_ * _))         -> run_one (or_else 1 < Str:parse_int n) Bool:False end
     end
 end
 

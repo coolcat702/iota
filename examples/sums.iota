@@ -3,7 +3,7 @@ module Main is
 let describe
     : (Int + String) -> String
     = match
-        (_ +) -> comp (concat "number ") show end
+        (_ +) -> concat "number " ~ show end
         (+ _) -> concat "string " end
     end
 end

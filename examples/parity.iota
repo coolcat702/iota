@@ -17,5 +17,5 @@ with even
     = fn x -> eq 0 (mod x 2) end
 with parse_or_default (a : Parseable, Default)
     : String -> a
-    = fn s -> map_nil_same default (parse s) end
+    = fn s -> or_else default (parse s) end
 end

@@ -54,7 +54,7 @@ end
 
 let sleep
     : Float -> IO Unit
-    = comp prim_sleep (comp float_to_int < mul 1000.0)
+    = prim_sleep ~ float_to_int ~ mul 1000.0
 end
 
 # Runs an action and also returns how many seconds it took.
@@ -87,27 +87,27 @@ end
 
 let month
     : DateTime -> Int
-    = comp fst rst
+    = fst ~ rst
 end
 
 let day
     : DateTime -> Int
-    = comp (comp fst rst) rst
+    = fst ~ rst ~ rst
 end
 
 let hour
     : DateTime -> Int
-    = comp (comp (comp fst rst) rst) rst
+    = fst ~ rst ~ rst ~ rst
 end
 
 let minute
     : DateTime -> Int
-    = comp (comp (comp (comp fst rst) rst) rst) rst
+    = fst ~ rst ~ rst ~ rst ~ rst
 end
 
 let second
     : DateTime -> Int
-    = comp (comp (comp (comp rst rst) rst) rst) rst
+    = rst ~ rst ~ rst ~ rst ~ rst
 end
 
 let is_leap_year
@@ -249,7 +249,7 @@ end
 
 let add_seconds
     : Float -> DateTime -> DateTime
-    = comp2 from_unix < flip < comp add to_unix
+    = comp2 from_unix < flip < add ~ to_unix
 end
 
 # The local time zone's offset from UTC, in seconds east, at a moment in time.
@@ -262,7 +262,7 @@ end
 let now_local
     : IO DateTime
     = now > bind < fn t -> local_offset t >
-        bind < comp return < comp from_unix < comp (add t) int_to_float
+        bind < return ~ from_unix ~ add t ~ int_to_float
     end
 end
 
@@ -297,7 +297,7 @@ end
 
 let pad2
     : Int -> String
-    = comp (Str:pad_left 2 '0') show
+    = Str:pad_left 2 '0' ~ show
 end
 
 let field

@@ -155,22 +155,22 @@ end
 
 let def_hint
     : CwDef -> String
-    = comp fst rst
+    = fst ~ rst
 end
 
 let def_par
     : CwDef -> Int
-    = comp (comp fst rst) rst
+    = fst ~ rst ~ rst
 end
 
 let def_rows
     : CwDef -> List String
-    = comp (comp (comp fst rst) rst) rst
+    = fst ~ rst ~ rst ~ rst
 end
 
 let def_turrets
     : CwDef -> List (Int * Int)
-    = comp (comp (comp rst rst) rst) rst
+    = rst ~ rst ~ rst ~ rst
 end
 
 let lv_name
@@ -180,47 +180,47 @@ end
 
 let lv_hint
     : CwLevel -> String
-    = comp fst rst
+    = fst ~ rst
 end
 
 let lv_grid
     : CwLevel -> List String
-    = comp (comp fst rst) rst
+    = fst ~ rst ~ rst
 end
 
 let lv_start
     : CwLevel -> Pt
-    = comp (comp (comp fst rst) rst) rst
+    = fst ~ rst ~ rst ~ rst
 end
 
 let lv_plates
     : CwLevel -> List (Pt * Int)
-    = comp (comp (comp (comp fst rst) rst) rst) rst
+    = fst ~ rst ~ rst ~ rst ~ rst
 end
 
 let lv_paths
     : CwLevel -> List (List Pt)
-    = comp (comp (comp (comp (comp fst rst) rst) rst) rst) rst
+    = fst ~ rst ~ rst ~ rst ~ rst ~ rst
 end
 
 let lv_enemies
     : CwLevel -> List (Int * CwEnemy)
-    = comp (comp (comp (comp (comp (comp fst rst) rst) rst) rst) rst) rst
+    = fst ~ rst ~ rst ~ rst ~ rst ~ rst ~ rst
 end
 
 let lv_par
     : CwLevel -> Int
-    = comp (comp (comp (comp (comp (comp rst rst) rst) rst) rst) rst) rst
+    = rst ~ rst ~ rst ~ rst ~ rst ~ rst ~ rst
 end
 
 let lv_width
     : CwLevel -> Int
-    = comp (comp len (first_of [])) lv_grid
+    = (len ~ first_of []) ~ lv_grid
 end
 
 let lv_height
     : CwLevel -> Int
-    = comp len lv_grid
+    = len ~ lv_grid
 end
 
 let row_cells
@@ -305,7 +305,7 @@ let comp_of
     = match
         rest, [], acc                -> (reverse acc * rest) end
         rest, List:Cons (f * fs), acc ->
-            comp_step (filter (adjacent f) rest) (filter (comp not (adjacent f)) rest) fs f acc
+            comp_step (filter (adjacent f) rest) (filter (not ~ adjacent f) rest) fs f acc
         end
     end
 end
@@ -372,13 +372,13 @@ end
 let locate
     : List (List Pt) -> Pt -> (Int * Int)
     = fn paths, p ->
-        locate_in (map_nil_same 0 (Search:find_index (Search:contains p) paths)) paths p
+        locate_in (or_else 0 (Search:find_index (Search:contains p) paths)) paths p
     end
 end
 
 let locate_in
     : Int -> List (List Pt) -> Pt -> (Int * Int)
-    = fn pi, paths, p -> (pi * map_nil_same 0 (Search:find_index (eq p) (nth_or [] pi paths))) end
+    = fn pi, paths, p -> (pi * or_else 0 (Search:find_index (eq p) (nth_or [] pi paths))) end
 end
 
 # ---- building
@@ -442,7 +442,7 @@ end
 let build_cells
     : CwDef -> List (Pt * Char) -> CwLevel
     = fn d, cells ->
-        build_final d cells < components < map fst (filter (comp is_path_char rst) cells)
+        build_final d cells < components < map fst (filter (is_path_char ~ rst) cells)
     end
 end
 
@@ -452,8 +452,8 @@ let build_final
         (def_name d)
         (def_hint d)
         (map (map ground_of) (pad_rows < def_rows d))
-        (first_of (0 * 0) (map fst < filter (comp (eq '@') rst) cells))
-        (map (fork pair fst < comp plate_group rst) < filter (comp (comp (ls -1) plate_group) rst) cells)
+        (first_of (0 * 0) (map fst < filter (eq '@' ~ rst) cells))
+        (map (fork pair fst < plate_group ~ rst) < filter ((ls -1 ~ plate_group) ~ rst) cells)
         paths
         (make_enemies paths (def_turrets d) 0 0 cells)
         (def_par d)
@@ -471,32 +471,32 @@ end
 
 let st_enemies
     : CwState -> List (Int * CwEnemy)
-    = comp fst rst
+    = fst ~ rst
 end
 
 let st_bullets
     : CwState -> List (Pt * Int)
-    = comp (comp fst rst) rst
+    = fst ~ rst ~ rst
 end
 
 let st_turn
     : CwState -> Int
-    = comp (comp (comp fst rst) rst) rst
+    = fst ~ rst ~ rst ~ rst
 end
 
 let st_cooldown
     : CwState -> Int
-    = comp (comp (comp (comp fst rst) rst) rst) rst
+    = fst ~ rst ~ rst ~ rst ~ rst
 end
 
 let st_status
     : CwState -> CwStatus
-    = comp (comp (comp (comp rst rst) rst) rst) rst
+    = rst ~ rst ~ rst ~ rst ~ rst
 end
 
 let mk_state
     : Pt -> List (Int * CwEnemy) -> List (Pt * Int) -> Int -> Int -> CwStatus -> CwState
-    = fn p, es, bs, t, cd, status -> (p * (es * (bs * (t * (cd * status))))) end
+    = fn p, es, bs, t, cd, status -> (p * es * bs * t * cd * status) end
 end
 
 let set_player
@@ -539,7 +539,7 @@ end
 
 let is_playing
     : CwState -> Bool
-    = comp status_is_playing st_status
+    = status_is_playing ~ st_status
 end
 
 let status_is_won
@@ -552,7 +552,7 @@ end
 
 let is_won
     : CwState -> Bool
-    = comp status_is_won st_status
+    = status_is_won ~ st_status
 end
 
 let status_cause
@@ -566,7 +566,7 @@ end
 # why the player died, if they did
 let death_cause
     : CwState -> Maybe String
-    = comp status_cause st_status
+    = status_cause ~ st_status
 end
 
 let kill_player
@@ -605,7 +605,7 @@ end
 
 let enemy_pts
     : CwLevel -> CwState -> List Pt
-    = fn lv, st -> map (comp (enemy_pos lv) rst) (st_enemies st) end
+    = fn lv, st -> map (enemy_pos lv ~ rst) (st_enemies st) end
 end
 
 # everything standing on the map that takes up room
@@ -616,7 +616,7 @@ end
 
 let enemy_at
     : CwLevel -> CwState -> Pt -> Maybe (Int * CwEnemy)
-    = fn lv, st, p -> Search:find (comp (comp (eq p) (enemy_pos lv)) rst) (st_enemies st) end
+    = fn lv, st, p -> Search:find ((eq p ~ enemy_pos lv) ~ rst) (st_enemies st) end
 end
 
 let plate_held
@@ -667,7 +667,7 @@ let line_clear
 with line_from
     : CwLevel -> CwState -> Pt -> Pt -> Bool
     = fn lv, st, a, b ->
-        Search:all (comp (comp not < blocked lv st) (line_point a b)) (range 1 < line_span a b)
+        Search:all ((not ~ blocked lv st) ~ line_point a b) (range 1 < line_span a b)
     end
 end
 
@@ -726,7 +726,7 @@ end
 
 let remove_enemy
     : CwState -> Int -> CwState
-    = fn st, id -> set_enemies st (filter (comp (neq id) fst) (st_enemies st)) end
+    = fn st, id -> set_enemies st (filter (neq id ~ fst) (st_enemies st)) end
 end
 
 # spikes hurt
@@ -741,7 +741,7 @@ end
 
 let bullet_at
     : CwState -> Pt -> Bool
-    = fn st, p -> Search:any (comp (eq p) fst) (st_bullets st) end
+    = fn st, p -> Search:any (eq p ~ fst) (st_bullets st) end
 end
 
 let add_bullet
@@ -888,8 +888,8 @@ let run_away
 with other_pts
     : CwLevel -> CwState -> Int -> List Pt
     = fn lv, st, i -> st_enemies st
-      > filter (comp (neq i) fst)
-      > map (comp (enemy_pos lv) rst)
+      > filter (neq i ~ fst)
+      > map (enemy_pos lv ~ rst)
     end
 with nearest # the closest place in the list (the earliest of equals)
     : Pt -> List Pt -> Pt
@@ -954,7 +954,7 @@ let act_by_id
     : CwLevel -> CwState -> Int -> CwState
     = fn lv, st, i ->
         cond (is_playing st)
-            (act_found lv st i < Search:find (comp (eq i) fst) (st_enemies st))
+            (act_found lv st i < Search:find (eq i ~ fst) (st_enemies st))
             st
       end
 with act_found

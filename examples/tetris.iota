@@ -132,17 +132,17 @@ end
 
 let rot_of
     : Piece -> Int
-    = comp fst rst
+    = fst ~ rst
 end
 
 let px
     : Piece -> Int
-    = comp fst (comp rst rst)
+    = fst ~ rst ~ rst
 end
 
 let py
     : Piece -> Int
-    = comp rst (comp rst rst)
+    = rst ~ rst ~ rst
 end
 
 # the cells a piece covers on the board
@@ -202,7 +202,7 @@ end
 # (number of lines cleared, the new board)
 let clear_lines
     : Board -> (Int * Board)
-    = fn b -> fill_top (len (filter is_full b)) (filter (comp not is_full) b) end
+    = fn b -> fill_top (len (filter is_full b)) (filter (not is_full ~) b) end
 end
 
 let fill_top

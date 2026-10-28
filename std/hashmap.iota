@@ -71,7 +71,7 @@ end
 
 let get_or (k : Hashable, Eqable) v
     : v -> k -> HashMap k v -> v
-    = fn default, key, m -> map_nil_same default (get key m) end
+    = fn default, key, m -> or_else default (get key m) end
 end
 
 let member (k : Hashable, Eqable) v
@@ -90,19 +90,19 @@ end
 let insert_with (k : Hashable, Eqable) v
     : (v -> v -> v) -> k -> v -> HashMap k v -> HashMap k v
     = fn f, key, value ->
-        alter key (comp Maybe:Val < maybe_fold value < f value)
+        alter key (Maybe:Val ~ (maybe_fold value < f value))
     end
 end
 
 let remove (k : Hashable, Eqable) v
     : k -> HashMap k v -> HashMap k v
-    = fn key -> alter key (const Maybe:Nil) end
+    = flip alter (const Maybe:Nil)
 end
 
 # Applies `f` to the value under a key, if there is one.
 let adjust (k : Hashable, Eqable) v
     : (v -> v) -> k -> HashMap k v -> HashMap k v
-    = fn f, key -> alter key (maybe_map f) end
+    = flip alter ~ maybe_map
 end
 
 # The general update: `f` sees the current value (if any) and returns the new one; `Nil`
@@ -246,7 +246,7 @@ end
 let normalize k v
     : HNode k v -> HNode k v
     = match
-        HNode:Branch q -> collapse (Prelude:filter (comp not is_empty_node) (children q)) (HNode:Branch q) end
+        HNode:Branch q -> collapse (Prelude:filter (not ~ is_empty_node) (children q)) (HNode:Branch q) end
         n              -> n end
     end
 end
@@ -353,7 +353,7 @@ let alter_entries (k : Eqable) v
         end
         key, Maybe:Nil, entries, present ->
             cond present
-                (Prelude:filter (comp (neq key) fst) entries * -1)
+                (Prelude:filter (neq key ~ fst) entries * -1)
                 (entries * 0)
         end
     end

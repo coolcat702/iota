@@ -29,7 +29,7 @@ end
 # Sorts by a key computed from each element.
 let sort_on a (k : Orderable)
     : (a -> k) -> List a -> List a
-    = comp sort_by (over lse)
+    = sort_by ~ over lse
 end
 
 let sort_n a
@@ -87,5 +87,5 @@ end
 # Sorted, without duplicates.
 let sort_unique (a : Orderable, Eqable)
     : List a -> List a
-    = comp dedup sort
+    = dedup ~ sort
 end

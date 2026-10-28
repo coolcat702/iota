@@ -48,7 +48,7 @@ end
 # The next raw 32-bit value (any Int, positive or negative) and the next generator.
 let next
     : Gen -> (Int * Gen)
-    = comp next_from (comp (add 1831565813) state)
+    = next_from ~ add 1831565813 ~ state
 end
 
 let next_from
@@ -77,7 +77,7 @@ end
 
 let mb5
     : Int -> Int
-    = join < comp bit_xor < flip shift_right 14
+    = join < bit_xor ~ flip shift_right 14
 end
 
 # A whole number in [lo, hi): `int_range 1 7 g` is a die roll. (hi must be above lo.)
@@ -94,7 +94,7 @@ end
 # A Float in [0, 1).
 let float
     : Gen -> (Float * Gen)
-    = comp to_unit next
+    = to_unit ~ next
 end
 
 let to_unit
@@ -104,7 +104,7 @@ end
 
 let bool
     : Gen -> (Bool * Gen)
-    = comp bit_of next
+    = bit_of ~ next
 end
 
 let bit_of
@@ -115,7 +115,7 @@ end
 # Two independent generators from one.
 let split
     : Gen -> (Gen * Gen)
-    = comp split_from next
+    = split_from ~ next
 end
 
 let split_from

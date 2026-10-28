@@ -28,17 +28,17 @@ end
 
 let stdout
     : Output -> String
-    = comp fst rst end
+    = fst ~ rst
 end
 
 let stderr
     : Output -> String
-    = comp rst rst end
+    = rst ~ rst
 end
 
 let success
     : Output -> Bool
-    = comp (eq 0) exit_code end
+    = eq 0 ~ exit_code
 end
 
 # Runs a program with its standard output and error captured (and nothing on its input).
@@ -51,7 +51,7 @@ end
 let run_with_input
     : String -> List String -> String -> IO (Either IOError Output)
     = fn program, args, input ->
-        fmap (comp (either_flat decode_capture) io_decode) (prim_run (spec program args) input 0)
+        fmap (either_flat decode_capture ~ io_decode) (prim_run (spec program args) input 0)
     end
 end
 
@@ -60,7 +60,7 @@ end
 let inherit
     : String -> List String -> IO (Either IOError Int)
     = fn program, args ->
-        fmap (comp (either_map first_int) io_decode) (prim_run (spec program args) [] 1)
+        fmap (either_map first_int ~ io_decode) (prim_run (spec program args) [] 1)
     end
 end
 
@@ -85,7 +85,7 @@ end
 # The environment, as (name, value) pairs.
 let environ
     : IO (List (String * String))
-    = fmap (comp (map split_assignment) split_nuls) prim_sys_environ
+    = fmap (map split_assignment ~ split_nuls) prim_sys_environ
 end
 
 # ---- decoding the runtime's answer ----
@@ -106,13 +106,13 @@ end
 
 let int_or_zero
     : String -> Int
-    = comp (map_nil_same 0) Str:parse_int
+    = or_else 0 ~ Str:parse_int
 end
 
 # "<code>\0" -> code
 let first_int
     : String -> Int
-    = comp int_or_zero < take_while (comp (neq 0) ord)
+    = int_or_zero ~ take_while (eq 0 ~ ord)
 end
 
 # "<code>\0<stdout length>\0<stdout><stderr>"

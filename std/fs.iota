@@ -15,7 +15,7 @@ import file std/sort.iota
 # The names (not full paths) in a directory, sorted. "." and ".." are not included.
 let list_dir
     : String -> IO (Either IOError (List String))
-    = comp (fmap (comp (either_map (comp Sort:sort split_nuls)) io_decode)) prim_fs_list
+    = fmap ((either_map < Sort:sort ~ split_nuls) ~ io_decode) ~ prim_fs_list
 end
 
 # Like `list_dir`, but each entry joined onto the directory: `list_dir_paths "src"` gives
@@ -28,7 +28,7 @@ end
 # Creates one directory; its parent must exist.
 let create_dir
     : String -> IO (Either IOError Unit)
-    = comp (fmap io_decode_unit) prim_fs_mkdir
+    = fmap io_decode_unit ~ prim_fs_mkdir
 end
 
 # Creates a directory and any missing parents; succeeds if it already exists.
@@ -58,7 +58,7 @@ end
 # Deletes a file (or an empty directory).
 let remove
     : String -> IO (Either IOError Unit)
-    = comp (fmap io_decode_unit) prim_fs_remove
+    = fmap io_decode_unit ~ prim_fs_remove
 end
 
 let rename
@@ -79,13 +79,13 @@ end
 
 let set_current_dir
     : String -> IO (Either IOError Unit)
-    = comp (fmap io_decode_unit) prim_fs_chdir
+    = fmap io_decode_unit ~ prim_fs_chdir
 end
 
 # The absolute path with symlinks resolved; the path must exist.
 let canonicalize
     : String -> IO (Either IOError String)
-    = comp (fmap io_decode) prim_fs_realpath
+    = fmap io_decode ~ prim_fs_realpath
 end
 
 # ---- metadata ----
@@ -94,24 +94,24 @@ end
 # 2 for a directory and 3 for anything else.
 let stat_fields
     : String -> IO (Either IOError (List Float))
-    = comp (fmap < comp (either_map < comp (map < comp (map_nil_same 0.0) parse) Str:words) io_decode) prim_fs_stat
+    = fmap < ((either_map < (map < or_else 0.0 ~ parse) ~ Str:words) ~ io_decode) ~ prim_fs_stat
 end
 
 # The size of a file in bytes (clamped to the largest Int).
 let file_size
     : String -> IO (Either IOError Int)
-    = comp (fmap < either_map < comp float_to_int < nth_or 1 0.0) stat_fields
+    = (fmap < either_map < float_to_int ~ nth_or 1 0.0) ~ stat_fields
 end
 
 # The last modification time, in seconds since 1970.
 let modified_time
     : String -> IO (Either IOError Float)
-    = comp (fmap < either_map < nth_or 2 0.0) stat_fields
+    = fmap < either_map < nth_or 2 0.0 ~ stat_fields
 end
 
 let nth_or a
     : Int -> a -> List a -> a
-    = fn i, d, xs -> map_nil_same d (idx_opt i xs) end
+    = fn i, d, xs -> or_else d (idx_opt i xs) end
 end
 
 let idx_opt a
@@ -128,7 +128,7 @@ end
 # The lines of a file ("\n" or "\r\n" endings; a final line break adds no empty line).
 let read_lines
     : String -> IO (Either IOError (List String))
-    = comp (fmap (either_map Str:lines)) read_file
+    = fmap (either_map Str:lines) ~ read_file
 end
 
 # Writes the lines, each followed by "\n".

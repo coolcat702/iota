@@ -275,7 +275,7 @@ end
 
 let array_items
     : List Json -> String -> Parsed
-    = flip < comp (flip after_item) parse_value
+    = flip < flip after_item ~ parse_value
 end
 
 let after_item
@@ -608,7 +608,7 @@ end
 let pretty_array
     : Int -> List Json -> String
     = fn n, xs ->
-        join3 "[\n" (Str:join ",\n" (map (comp (append < indent < succ n) (pretty_at < succ n)) xs)) (append "\n" (append (indent n) "]"))
+        join3 "[\n" (Str:join ",\n" (map ((append < indent < succ n) ~ (pretty_at < succ n)) xs)) (append "\n" (append (indent n) "]"))
     end
 end
 
@@ -627,7 +627,7 @@ end
 # JSON has no NaN or infinity; they are written as null
 let number_text
     : Float -> String
-    = comp number_text_of float_repr
+    = number_text_of ~ float_repr
 end
 
 let number_text_of
@@ -709,7 +709,7 @@ instance Eqable Json is
     end
     let neq
         : Json -> Json -> Bool
-        = comp not Json:equal end
+        = not ~ Json:equal end
     end
 end
 

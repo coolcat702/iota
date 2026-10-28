@@ -84,22 +84,22 @@ end
 
 let can_play
     : Board -> Int -> Bool
-    = comp2 (comp (gr 6) len) column
+    = comp2 (gr 6 ~ len) column
 end
 
 let legal_moves
     : Board -> List Int
-    = comp (flip filter move_order) can_play
+    = flip filter move_order ~ can_play
 end
 
 let is_full
     : Board -> Bool
-    = Search:all < comp (eq 6) len
+    = Search:all < eq 6 ~ len
 end
 
 let drop_piece
     : Int -> Int -> Board -> Board
-    = fn c, p, b -> update_nth c (fn col -> append col [p] end) b end
+    = fn c, p, b -> update_nth c (flip append [p]) b end
 end
 
 let cell
@@ -118,12 +118,12 @@ end
 # columns are padded to 6
 let all_windows
     : Board -> List (List Int)
-    = comp windows_of < map fn col -> append col < fill (sub 6 < len col) 0 end
+    = windows_of ~ map fn col -> append col < fill (sub 6 < len col) 0 end
 end
 
 let windows_of
     : List (List Int) -> List (List Int)
-    = fn cols -> append (flat_map (sliding 4) cols) (flat_map group_windows < sliding 4 cols) end
+    = fork append (flat_map < sliding 4) (flat_map group_windows ~ sliding 4)
 end
 
 # the horizontal and diagonal windows in 4 neighboring columns
@@ -151,15 +151,15 @@ end
 
 let count_of
     : Int -> List Int -> Int
-    = comp2 len < comp filter eq
+    = comp2 len < filter ~ eq
 end
 
 # 1 or 2 if that player has four in a row, else 0
 let winner_of
     : List (List Int) -> Int
     = fn ws ->
-        cond (Search:any (comp (eq 4) (count_of 1)) ws) 1
-      < cond (Search:any (comp (eq 4) (count_of 2)) ws) 2 0
+        cond (Search:any (eq 4 ~ count_of 1) ws) 1
+      < cond (Search:any (eq 4 ~ count_of 2) ws) 2 0
     end
 end
 
@@ -284,7 +284,7 @@ end
 let pick_best
     : List (Int * Int) -> Gen -> (Int * Gen)
     = fn scored ->
-        choose_from < map fst < filter (comp (eq < foldl max (neg inf) (map rst scored)) rst) scored
+        choose_from < map fst < filter (eq < foldl max (neg inf) (map rst scored) ~ rst) scored
     end
 end
 
@@ -295,7 +295,7 @@ end
 
 let random_move
     : Board -> Gen -> (Int * Gen)
-    = comp choose_from legal_moves
+    = choose_from ~ legal_moves
 end
 
 # does dropping a disk here win at once?
@@ -707,7 +707,7 @@ end
 
 let widest
     : List String -> Int
-    = comp (foldl max 0) (map len)
+    = foldl max 0 ~ map len
 end
 
 let item_lines
@@ -734,7 +734,7 @@ let menu
     : String -> List String -> Int -> IO Int
     = fn subtitle, items, sel ->
         show_lines (fn cols, rows -> menu_lines cols subtitle items sel end) > then <
-        Term:read_key > bind < comp (menu_step subtitle items sel) menu_act
+        Term:read_key > bind < menu_step subtitle items sel ~ menu_act
     end
 end
 
@@ -782,7 +782,7 @@ end
 let human_turn
     : Opp -> Board -> Int -> Int -> Gen -> IO Gen
     = fn opp, b, p, sel, g ->
-        Term:read_key > bind < comp (human_step opp b p sel g) game_act
+        Term:read_key > bind < human_step opp b p sel g ~ game_act
     end
 end
 

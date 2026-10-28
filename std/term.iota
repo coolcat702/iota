@@ -83,7 +83,7 @@ end
 # (columns, rows)
 let size
     : IO (Int * Int)
-    = bind (comp (flip fmap prim_rows) pair) prim_cols
+    = bind (flip fmap prim_rows ~ pair) prim_cols
 end
 
 # True if the window was resized since the last time this (or `read_key`) reported it.
@@ -129,7 +129,7 @@ end
 # Waits at most this many milliseconds; `Timeout` if nothing was pressed.
 let read_key_timeout
     : Int -> IO Key
-    = comp (fmap key_of_code) prim_key
+    = fmap key_of_code ~ prim_key
 end
 
 # The key that is waiting, if any, without blocking.
