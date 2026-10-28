@@ -573,6 +573,8 @@ end
 
 # ============================================================
 
+# Standard output. The standard error counterparts (`eputstr`, `eputstrln`, `eprint`,
+# `eprintln`) are defined with the other process functions below.
 let putstr
     : String -> IO Unit
     = undefined
@@ -1319,17 +1321,11 @@ instance Orderable Bool is
     end
     let ls
         : Bool -> Bool -> Bool
-        = match
-            Bool:False, Bool:True -> Bool:True end
-            _, _                  -> Bool:False end
-        end
+        = flip gr
     end
     let lse
         : Bool -> Bool -> Bool
-        = match
-            Bool:True, Bool:False -> Bool:False end
-            _, _                  -> Bool:True end
-        end
+        = flip gre
     end
 end
 
@@ -1344,7 +1340,11 @@ instance Orderable Nat is
     end
     let gre
         : Nat -> Nat -> Bool
-        = flip ls
+        = match
+            Nat:Succ n, Nat:Succ m     -> gre n m end
+            Nat:Zero, Nat:Succ _       -> Bool:False end
+            _, _                       -> Bool:True end
+        end
     end
     let ls
         : Nat -> Nat -> Bool
@@ -1375,19 +1375,11 @@ instance Orderable (Maybe a) is
     end
     let ls (a : Orderable)
         : Maybe a -> Maybe a -> Bool
-        = match
-            Maybe:Val x, Maybe:Val y   -> ls x y end
-            Maybe:Nil, Maybe:Val _     -> Bool:True end
-            _, _                       -> Bool:False end
-        end
+        = flip gr
     end
     let lse (a : Orderable)
         : Maybe a -> Maybe a -> Bool
-        = match
-            Maybe:Val x, Maybe:Val y   -> lse x y end
-            Maybe:Val _, Maybe:Nil     -> Bool:False end
-            _, _                       -> Bool:True end
-        end
+        = flip gre
     end
 end
 
@@ -2064,14 +2056,26 @@ let flush
     = prim_io_flush
 end
 
-let eprint
+# Standard error mirrors standard output: `eputstr`/`eputstrln` take a String like
+# `putstr`/`putstrln`, and `eprint`/`eprintln` take anything Showable like `print`/`println`.
+let eputstr
     : String -> IO Unit
     = fn s -> prim_io_eprint s 0 end
 end
 
-let eprintln
+let eputstrln
     : String -> IO Unit
     = fn s -> prim_io_eprint s 1 end
+end
+
+let eprint (a : Showable)
+    : a -> IO Unit
+    = eputstr ~ show
+end
+
+let eprintln (a : Showable)
+    : a -> IO Unit
+    = eputstrln ~ show
 end
 
 # One line of input, or `Nil` once the input has ended.
@@ -2089,7 +2093,7 @@ end
 # An environment variable.
 let get_env
     : String -> IO (Maybe String)
-    = map (get_right ~ io_decode r) ~ prim_sys_getenv
+    = map (get_right ~ io_decode) ~ prim_sys_getenv
 end
 
 # ============================================================

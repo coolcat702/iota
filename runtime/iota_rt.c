@@ -113,25 +113,6 @@ uint32_t *rt_float_repr(double v, uint64_t *len) {
 	return from_ascii(tmp, len);
 }
 
-static void put_utf8(uint32_t c) {
-	if (c < 0x80) putchar((int)c);
-	else if (c < 0x800) {
-		putchar(0xC0 | (c >> 6));
-		putchar(0x80 | (c & 0x3F));
-	}
-	else if (c < 0x10000) {
-		putchar(0xE0 | (c >> 12));
-		putchar(0x80 | ((c >> 6) & 0x3F));
-		putchar(0x80 | (c & 0x3F));
-	}
-	else {
-		putchar(0xF0 | (c >> 18));
-		putchar(0x80 | ((c >> 12) & 0x3F));
-		putchar(0x80 | ((c >> 6) & 0x3F));
-		putchar(0x80 | (c & 0x3F));
-	}
-}
-
 /* A string is a lazy list, so printing one forces it cell by cell; the generated
  * code appends each character to a builder and prints once the list is complete
  * (so an error while evaluating the tail prints nothing instead of half a line). */
@@ -157,12 +138,6 @@ void rt_sb_push(StrBuf *b, uint32_t c) {
 		}
 	}
 	b->data[b->len++] = c;
-}
-void rt_print_sb(StrBuf *b, int32_t newline) {
-	for (uint64_t i = 0; i < b->len; i++) put_utf8(b->data[i]);
-	if (newline) putchar('\n');
-	rt_free(b->data);
-	rt_free(b);
 }
 
 /* ------------------------------------------------------------------------- *
@@ -268,6 +243,30 @@ static char *sb_take(StrBuf *b, size_t *n, int bytes_mode) {
 }
 static char *sb_cstr(StrBuf *b) {
 	return sb_take(b, NULL, 0);
+}
+
+/* Writes all of `s` to the file descriptor, retrying on EINTR and short writes. */
+static void write_all(int fd, const char *s, size_t n) {
+	size_t off = 0;
+	while (off < n) {
+		ssize_t w = write(fd, s + off, n - off);
+		if (w < 0) {
+			if (errno == EINTR) continue;
+			break;
+		}
+		off += (size_t)w;
+	}
+}
+
+/* `putstr` / `putstrln`. Standard output and standard error share one encoding path
+ * (`sb_take`), so a string prints the same bytes on either stream: code points that
+ * are not valid Unicode (surrogates, above U+10FFFF) become U+FFFD on both. */
+void rt_print_sb(StrBuf *b, int32_t newline) {
+	size_t n;
+	char *s = sb_take(b, &n, 0); /* room for one more byte beyond n */
+	if (newline) s[n++] = '\n';
+	fwrite(s, 1, n, stdout);
+	free(s);
 }
 
 /* [status][UTF-8 payload decoded]; or, with bytes_mode, one code point per byte */
@@ -444,23 +443,15 @@ void rt_io_flush(void) {
 	fflush(stdout);
 }
 
+/* `eputstr` / `eputstrln`. Anything buffered on stdout is written first so the two streams
+ * interleave in program order, and the text and its newline go out in a single write so
+ * another process writing to the same stream cannot split them. */
 void rt_io_eprint(StrBuf *b, int32_t newline) {
 	size_t n;
 	char *s = sb_take(b, &n, 0);
+	if (newline) s[n++] = '\n';
 	fflush(stdout);
-	size_t off = 0;
-	while (off < n) {
-		ssize_t w = write(2, s + off, n - off);
-		if (w < 0) {
-			if (errno == EINTR) continue;
-			break;
-		}
-		off += (size_t)w;
-	}
-	if (newline) {
-		ssize_t w = write(2, "\n", 1);
-		(void)w;
-	}
+	write_all(2, s, n);
 	free(s);
 }
 

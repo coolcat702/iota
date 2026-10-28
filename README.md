@@ -668,7 +668,8 @@ end
 ```iota
 read_line    : IO (Maybe String)       # Nil at the end of the input (unlike `getln`, which gives "")
 read_stdin   : IO String               # everything that is left
-eprint, eprintln : String -> IO Unit   # standard error
+eputstr, eputstrln : String -> IO Unit          # standard error, like putstr / putstrln
+eprint, eprintln : Showable a => a -> IO Unit    # standard error, like print / println
 flush        : IO Unit                 # `print` is buffered; input and sleeping flush it for you
 get_env      : String -> IO (Maybe String)
 args         : IO (List String)        # the same list `main` can receive

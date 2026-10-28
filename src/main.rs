@@ -17,7 +17,7 @@ use std::{
 	time::Instant,
 };
 
-use ariadne::{Color, Label, Report, ReportKind};
+use ariadne::{Color, Config, Label, Report, ReportKind};
 use clap::{Parser, ValueEnum};
 
 mod backend;
@@ -74,17 +74,19 @@ impl<'r> Diag<'r> {
 				if let Some(h) = &d.help {
 					report = report.with_help(h);
 				}
+				let report = report.with_config(Config::default().with_color(ui::color_enabled()));
 				let _ = report.finish().eprint(&mut *self.registry);
 			}
 			None => {
+				// same coloring rules as the spanned reports and the progress output
 				let (name, c) = match d.severity {
-					Severity::Error => ("Error:", "\x1b[31m"),
-					Severity::Warning => ("Warning:", "\x1b[33m"),
-					Severity::Advice => ("Advice:", "\x1b[34m"),
+					Severity::Error => ("Error:", ui::RED),
+					Severity::Warning => ("Warning:", ui::YELLOW),
+					Severity::Advice => ("Advice:", ui::BLUE),
 				};
-				eprintln!("{}{}\x1b[0m {}", c, name, d.message);
+				eprintln!("{} {}", ui::paint(c, name), d.message);
 				if let Some(h) = &d.help {
-					eprintln!("\x1b[36mHelp:\x1b[0m {}", h);
+					eprintln!("{} {}", ui::paint(ui::CYAN, "Help:"), h);
 				}
 			}
 		}

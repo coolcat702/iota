@@ -30,7 +30,12 @@ fn ui() -> &'static Ui {
 	})
 }
 
-fn paint(code: &str, s: &str) -> String {
+/// Whether stderr output should be colored (a terminal, and `NO_COLOR` unset).
+pub fn color_enabled() -> bool {
+	ui().color
+}
+
+pub fn paint(code: &str, s: &str) -> String {
 	if ui().color {
 		format!("\x1b[{}m{}\x1b[0m", code, s)
 	} else {
@@ -43,6 +48,10 @@ const DIM: &str = "2";
 const BOLD_RED: &str = "1;31";
 const BOLD_GREEN: &str = "1;32";
 const BOLD_CYAN: &str = "1;36";
+pub const RED: &str = "31";
+pub const YELLOW: &str = "33";
+pub const BLUE: &str = "34";
+pub const CYAN: &str = "36";
 
 pub fn header(file: &str) {
 	if ui().quiet {
