@@ -10,12 +10,12 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::diag::Diagnostic;
 use crate::ir::{
-	display_ty, peel_fn, Atom, CasePat, Expr, Extern, Function, IrProgram, Side, Value,
+	Atom, CasePat, Expr, Extern, Function, IrProgram, Side, Value, display_ty, peel_fn,
 };
-use crate::lang::{bare, split_ctor, Intrinsic, Lang, LangItem};
+use crate::lang::{Intrinsic, Lang, LangItem, bare, split_ctor};
 use crate::parser::{Literal, Span};
 use crate::typechecker::Ty;
-use crate::types::{spine, TypeInfo};
+use crate::types::{TypeInfo, spine};
 
 use super::mir::*;
 
@@ -347,7 +347,7 @@ impl<'a> L<'a> {
 				ret.clone(),
 				MValue::Prim(op, (0..params.len()).map(a).collect()),
 			),
-			Print | Println => {
+			PutStr | PutStrLn => {
 				let inner = ret_r(MTy::Unit, MValue::Prim(op, vec![a(0)]));
 				action(vec![("a0".into(), params[0].1.clone())], inner)
 			}
@@ -499,7 +499,7 @@ impl<'a> L<'a> {
 						CasePat::Lit(Literal::Char(c)) => (MPat::Char(*c), None),
 						CasePat::Lit(Literal::Float(x)) => (MPat::Float(*x), None),
 						CasePat::Lit(other) => {
-							return Err(format!("unsupported literal pattern {:?}", other))
+							return Err(format!("unsupported literal pattern {:?}", other));
 						}
 						CasePat::Ctor(t) => {
 							(MPat::Ctor(bare(t).to_string()), Some(bare(t).to_string()))

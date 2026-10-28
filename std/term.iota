@@ -54,17 +54,17 @@ end
 
 let stdin_is_tty
     : IO Bool
-    = fmap (eq 1) (prim_is_tty 0)
+    = map (eq 1) (prim_is_tty 0)
 end
 
 let stdout_is_tty
     : IO Bool
-    = fmap (eq 1) (prim_is_tty 1)
+    = map (eq 1) (prim_is_tty 1)
 end
 
 let stderr_is_tty
     : IO Bool
-    = fmap (eq 1) (prim_is_tty 2)
+    = map (eq 1) (prim_is_tty 2)
 end
 
 # ---- size ----
@@ -83,13 +83,13 @@ end
 # (columns, rows)
 let size
     : IO (Int * Int)
-    = bind (flip fmap prim_rows ~ pair) prim_cols
+    = bind (flip map prim_rows ~ pair) prim_cols
 end
 
 # True if the window was resized since the last time this (or `read_key`) reported it.
 let resized
     : IO Bool
-    = fmap (eq 1) prim_resized
+    = map (eq 1) prim_resized
 end
 
 # ---- raw mode ----
@@ -97,7 +97,7 @@ end
 # Turns raw mode on or off. False if the input is not a terminal.
 let set_raw
     : Bool -> IO Bool
-    = fn on -> fmap (eq 0) (prim_raw < cond on 1 0) end
+    = fn on -> map (eq 0) (prim_raw < cond on 1 0) end
 end
 
 # Runs an action with raw mode on, then restores the terminal.
@@ -123,19 +123,19 @@ end
 # Waits for a key.
 let read_key
     : IO Key
-    = fmap key_of_code (prim_key -1)
+    = map key_of_code (prim_key -1)
 end
 
 # Waits at most this many milliseconds; `Timeout` if nothing was pressed.
 let read_key_timeout
     : Int -> IO Key
-    = fmap key_of_code ~ prim_key
+    = map key_of_code ~ prim_key
 end
 
 # The key that is waiting, if any, without blocking.
 let poll_key
     : IO (Maybe Key)
-    = fmap (fn k -> cond (eq (key_name k) "Timeout") Maybe:Nil (Maybe:Val k) end) (read_key_timeout 0)
+    = map (fn k -> cond (eq (key_name k) "Timeout") Maybe:Nil (Maybe:Val k) end) (read_key_timeout 0)
 end
 
 let key_of_code

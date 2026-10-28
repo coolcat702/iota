@@ -202,7 +202,7 @@ end
 # (number of lines cleared, the new board)
 let clear_lines
     : Board -> (Int * Board)
-    = fn b -> fill_top (len (filter is_full b)) (filter (not is_full ~) b) end
+    = fn b -> fill_top (len (filter is_full b)) (filter (not ~ is_full) b) end
 end
 
 let fill_top
@@ -874,7 +874,7 @@ end
 # milliseconds since the game started
 let now_ms
     : Float -> IO Int
-    = fn t0 -> fmap (fn t -> float_to_int (mul 1000.0 (sub t t0)) end) Time:monotonic end
+    = fn t0 -> map (fn t -> float_to_int (mul 1000.0 (sub t t0)) end) Time:monotonic end
 end
 
 # draw, then wait for a key, for gravity or for the lock timer, whichever comes first.

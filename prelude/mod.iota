@@ -345,14 +345,6 @@ end
 
 # ============================================================
 
-let map a b
-    : (a -> b) -> List a -> List b
-    = match
-        _, []                 -> []                         end
-        f, List:Cons (x * xs) -> List:Cons (f x * map f xs) end
-    end
-end
-
 let filter a
     : (a -> Bool) -> List a -> List a
     = match
@@ -379,13 +371,8 @@ let foldr a b
     : (a -> b -> b) -> b -> List a -> b
     = match
         f, z, [] -> z end
-	f, z, List:Cons (x * xs) -> f x (foldr f z xs) end
+        f, z, List:Cons (x * xs) -> f x (foldr f z xs) end
     end
-end
-
-let flat_map a b
-    : (a -> List b) -> List a -> List b
-    = fn f -> foldr (fn x, acc -> append (f x) acc end) [] end
 end
 
 let scan a b
@@ -416,12 +403,12 @@ end
 
 let len a
     : List a -> Int
-    = comp (foldl add 0) (map < const 1)
+    = foldl add 0 ~ map (const 1)
 end
 
 let reverse a
     : List a -> List a
-    = foldl (flip (comp2 List:Cons pair)) []
+    = foldl (flip < comp2 List:Cons pair) []
 end
 
 let take a
@@ -431,7 +418,7 @@ let take a
         n, List:Cons (x * xs) ->
             cond (lse n 0)
                 []
-                (List:Cons (x * take (sub n 1) xs))
+                (List:Cons (x * take (pred n) xs))
         end
     end
 end
@@ -443,7 +430,7 @@ let drop a
         n, List:Cons (x * xs) ->
             cond (lse n 0)
                 (List:Cons (x * xs))
-                (drop (sub n 1) xs)
+                (drop (pred n) xs)
         end
     end
 end
@@ -462,13 +449,7 @@ end
 
 let zip a b
     : List a -> List b -> List (a * b)
-    = match
-        [] , _ -> [] end
-        _, [] -> [] end
-        List:Cons (x * xs), List:Cons (y * ys) ->
-            List:Cons ((x * y) * zip xs ys)
-        end
-    end
+    = zip_with pair
 end
 
 let zip_with a b c
@@ -500,11 +481,7 @@ end
 
 let index_of (a : Eqable)
     : List a -> a -> Maybe Int
-    = fn xs ->
-        fn x ->
-            index_of_from xs x 0
-        end
-    end
+    = flip (flip ~ index_of_from) 0
 end
 
 let index_of_from (a : Eqable)
@@ -514,14 +491,14 @@ let index_of_from (a : Eqable)
         List:Cons (y * ys), x, i ->
             cond (eq y x)
                 (Maybe:Val i)
-                (index_of_from ys x (add i 1))
+                (index_of_from ys x < succ i)
         end
     end
 end
 
 let repeat a
     : Int -> List a -> List a
-    = fn n, s -> cond (lse n 0) [] (append s (repeat (sub n 1) s)) end
+    = fn n, s -> cond (lse n 0) [] (append s (repeat (pred n) s)) end
 end
 
 let flatten a
@@ -534,22 +511,6 @@ end
 # Maybe / Either
 
 # ============================================================
-
-let maybe_map a b
-    : (a -> b) -> Maybe a -> Maybe b
-    = match
-        _, Maybe:Nil -> Maybe:Nil end
-        f, Maybe:Val x -> Maybe:Val (f x) end
-    end
-end
-
-let either_map a b c
-    : (b -> c) -> Either a b -> Either a c
-    = match
-        _, Either:Left x -> Either:Left x end
-        f, Either:Right x -> Either:Right (f x) end
-    end
-end
 
 let get_right a b
     : Either a b -> Maybe b
@@ -583,27 +544,27 @@ end
 
 let range (a : Successable, Orderable)
     : a -> a -> List a
-    = comp to from
+    = to ~ from
 end
 
 let range_inc (a : Successable, Orderable)
     : a -> a -> List a
-    = comp to_inc from
+    = to_inc ~ from
 end
 
 let from (a : Successable)
     : a -> List a
-    = comp List:Cons < ap pair < comp from succ
+    = List:Cons ~ (ap pair < from ~ succ)
 end
 
 let to (a : Orderable)
     : List a -> a -> List a
-    = flip < comp take_while gr
+    = flip < take_while ~ gr
 end
 
 let to_inc (a : Orderable)
     : List a -> a -> List a
-    = flip < comp take_while gre
+    = flip < take_while ~ gre
 end
 
 # ============================================================
@@ -612,12 +573,12 @@ end
 
 # ============================================================
 
-let print
+let putstr
     : String -> IO Unit
     = undefined
 end
 
-let println
+let putstrln
     : String -> IO Unit
     = undefined
 end
@@ -625,6 +586,21 @@ end
 let getln
     : IO String
     = undefined
+end
+
+let print (a : Showable)
+    : a -> IO Unit
+    = putstr ~ show
+end
+
+let println (a : Showable)
+    : a -> IO Unit
+    = putstrln ~ show
+end
+
+let input (a : Parseable)
+    : IO (Maybe a)
+    = map parse getln
 end
 
 # ============================================================
@@ -734,7 +710,7 @@ class Parseable a is
 end
 
 class Functor f is
-    let fmap a b
+    let map a b
         : (a -> b) -> f a -> f b
     end
 end
@@ -753,6 +729,11 @@ end
 let then (m : Monad) a b
     : m b -> m a -> m b
     = fork2 bind const id
+end
+
+let flat_map m a b
+    : (a -> m b) -> m a -> m b
+    = bind
 end
 
 class Default a is
@@ -908,7 +889,7 @@ instance Parseable Int is
     let parse
         : String -> Maybe Int
         = match
-            List:Cons ('-' * ds) -> fmap (sub 0) (parse_nat ds) end
+            List:Cons ('-' * ds) -> map neg (parse_nat ds) end
             List:Cons ('+' * ds) -> parse_nat ds end
             s                    -> parse_nat s end
         end
@@ -916,16 +897,22 @@ instance Parseable Int is
 end
 
 instance Functor List is
-    let fmap a b
+    let map a b
         : (a -> b) -> List a -> List b
-        = map
+        = match
+            _, []                 -> []                         end
+            f, List:Cons (x * xs) -> List:Cons (f x * map f xs) end
+        end
     end
 end
 
 instance Functor Maybe is
-    let fmap a b
+    let map a b
         : (a -> b) -> Maybe a -> Maybe b
-        = maybe_map
+        = match
+            _, Maybe:Nil -> Maybe:Nil end
+            f, Maybe:Val x -> Maybe:Val (f x) end
+        end
     end
 end
 
@@ -1096,21 +1083,21 @@ let nat_to_int
     : Nat -> Int
     = match
         Nat:Zero   -> 0 end
-        Nat:Succ n -> add 1 (nat_to_int n) end
+        Nat:Succ n -> succ (nat_to_int n) end
     end
 end
 
 let int_to_nat
     : Int -> Nat
     = match
-        n -> cond (lse n 0) Nat:Zero (Nat:Succ (int_to_nat (sub n 1))) end
+        n -> cond (lse n 0) Nat:Zero (Nat:Succ (int_to_nat (pred n))) end
     end
 end
 
 let float_digit
     : Int -> Float
     = match
-        n -> cond (lse n 0) 0.0 (add 1.0 (float_digit (sub n 1))) end
+        n -> cond (lse n 0) 0.0 (succ (float_digit (pred n))) end
     end
 end
 
@@ -1463,7 +1450,7 @@ end
 instance Showable Char is
     let show
         : Char -> String
-        = comp (flip (comp2 List:Cons pair) []) I
+        = fn c -> ['\'', c, '\''] end
     end
 end
 
@@ -1487,7 +1474,7 @@ end
 instance Showable Nat is
     let show
         : Nat -> String
-        = comp show nat_to_int
+        = show ~ nat_to_int
     end
 end
 
@@ -1561,7 +1548,7 @@ end
 instance Parseable Nat is
     let parse
         : String -> Maybe Nat
-        = comp (maybe_map int_to_nat) (comp parse_nat I)
+        = map int_to_nat ~ parse_nat
     end
 end
 
@@ -1580,7 +1567,7 @@ instance Parseable Bool is
         : String -> Maybe Bool
         = match
             s -> cond (eq s "True") (Maybe:Val Bool:True)
-                    (cond (eq s "False") (Maybe:Val Bool:False) Maybe:Nil) end
+                (cond (eq s "False") (Maybe:Val Bool:False) Maybe:Nil) end
         end
     end
 end
@@ -1588,7 +1575,7 @@ end
 # Float: [+-] digits [. digits]
 let float_digit_of
     : Char -> Maybe Float
-    = comp (maybe_map float_digit) parse_digit
+    = map float_digit ~ parse_digit
 end
 
 let parse_float_frac
@@ -1625,7 +1612,7 @@ instance Parseable Float is
     let parse
         : String -> Maybe Float
         = match
-            List:Cons ('-' * ds) -> maybe_map (sub 0.0) (parse_float_unsigned ds) end
+            List:Cons ('-' * ds) -> map neg (parse_float_unsigned ds) end
             List:Cons ('+' * ds) -> parse_float_unsigned ds end
             s                    -> parse_float_unsigned s end
         end
@@ -1635,16 +1622,19 @@ end
 # ---- Functor / Monad ----
 
 instance Functor IO is
-    let fmap a b
+    let map a b
         : (a -> b) -> IO a -> IO b
-        = fn f -> bind (comp return f) end
+        = bind ~ (return ~)
     end
 end
 
 instance Functor (Either e) is
-    let fmap a b
+    let map a b
         : (a -> b) -> Either e a -> Either e b
-        = either_map
+        = match
+            _, Either:Left x -> Either:Left x end
+            f, Either:Right x -> Either:Right (f x) end
+        end
     end
 end
 
@@ -1665,14 +1655,11 @@ end
 instance Monad List is
     let return a
         : a -> List a
-        = flip (comp2 List:Cons pair) []
+        = fn x -> [x] end
     end
     let bind a b
         : (a -> List b) -> List a -> List b
-        = match
-            _, []                 -> [] end
-            f, List:Cons (x * xs) -> append (f x) (bind f xs) end
-        end
+        = flip foldr [] ~ (append ~)
     end
 end
 
@@ -1795,11 +1782,11 @@ end
 instance Successable Char is
     let succ
         : Char -> Char
-        = comp chr (comp (add 1) ord)
+        = chr ~ succ ~ ord
     end
     let pred
         : Char -> Char
-        = comp chr (comp (flip sub 1) ord)
+        = chr ~ pred ~ ord
     end
 end
 
@@ -1865,7 +1852,7 @@ end
 
 let io_decode_unit
     : String -> Either IOError Unit
-    = comp (either_map (const unit)) io_decode
+    = map (const unit) ~ io_decode
 end
 
 # ============================================================
@@ -1936,50 +1923,50 @@ end
 # The whole file as text (decoded from UTF-8; malformed bytes become U+FFFD).
 let read_file
     : String -> IO (Either IOError String)
-    = fn path -> fmap io_decode (prim_fs_read path 0) end
+    = fn path -> map io_decode (prim_fs_read path 0) end
 end
 
 # Replaces the file's contents (creating it if needed), encoding as UTF-8.
 let write_file
     : String -> String -> IO (Either IOError Unit)
-    = fn path -> fn text -> fmap io_decode_unit (prim_fs_write path text 0) end end
+    = fn path -> fn text -> map io_decode_unit (prim_fs_write path text 0) end end
 end
 
 let append_file
     : String -> String -> IO (Either IOError Unit)
-    = fn path -> fn text -> fmap io_decode_unit (prim_fs_write path text 2) end end
+    = fn path -> fn text -> map io_decode_unit (prim_fs_write path text 2) end end
 end
 
 # Binary variants: every Char is one byte (0..255).
 let read_file_bytes
     : String -> IO (Either IOError String)
-    = fn path -> fmap io_decode (prim_fs_read path 1) end
+    = fn path -> map io_decode (prim_fs_read path 1) end
 end
 
 let write_file_bytes
     : String -> String -> IO (Either IOError Unit)
-    = fn path -> fn bytes -> fmap io_decode_unit (prim_fs_write path bytes 1) end end
+    = fn path -> fn bytes -> map io_decode_unit (prim_fs_write path bytes 1) end end
 end
 
 let append_file_bytes
     : String -> String -> IO (Either IOError Unit)
-    = fn path -> fn bytes -> fmap io_decode_unit (prim_fs_write path bytes 3) end end
+    = fn path -> fn bytes -> map io_decode_unit (prim_fs_write path bytes 3) end end
 end
 
 # True for a file, a directory, or anything else that exists.
 let file_exists
     : String -> IO Bool
-    = fn path -> fmap (neq 0) (prim_fs_kind path) end
+    = map (neq 0) ~ prim_fs_kind
 end
 
 let is_file
     : String -> IO Bool
-    = fn path -> fmap (eq 1) (prim_fs_kind path) end
+    = map (eq 1) ~ prim_fs_kind
 end
 
 let is_dir
     : String -> IO Bool
-    = fn path -> fmap (eq 2) (prim_fs_kind path) end
+    = map (eq 2) ~ prim_fs_kind
 end
 
 # ============================================================
@@ -2054,7 +2041,7 @@ end
 # The command line arguments, without the program name.
 let args
     : IO (List String)
-    = fmap split_nuls prim_sys_args
+    = map split_nuls prim_sys_args
 end
 
 # Runs the rest of the program only after `main` has been given the arguments: the compiler
@@ -2090,7 +2077,7 @@ end
 # One line of input, or `Nil` once the input has ended.
 let read_line
     : IO (Maybe String)
-    = fmap (fn r -> get_right (io_decode r) end) prim_io_getln_opt
+    = map (get_right ~ io_decode) prim_io_getln_opt
 end
 
 # Everything left on standard input.
@@ -2102,7 +2089,7 @@ end
 # An environment variable.
 let get_env
     : String -> IO (Maybe String)
-    = fn name -> fmap (fn r -> get_right (io_decode r) end) (prim_sys_getenv name) end
+    = map (get_right ~ io_decode r) ~ prim_sys_getenv
 end
 
 # ============================================================
@@ -2121,7 +2108,7 @@ end
 # murmur3's 32-bit finalizer: spreads every input bit over the whole result.
 let hash_mix
     : Int -> Int
-    = comp mix5 (comp mix4 (comp mix3 (comp mix2 mix1)))
+    = mix5 ~ mix4 ~ mix3 ~ mix2 ~ mix1
 with mix1
     : Int -> Int
     = fn h -> bit_xor h (shift_right h 16) end
@@ -2155,7 +2142,7 @@ end
 instance Hashable Char is
     let hash
         : Char -> Int
-        = comp hash_mix ord
+        = hash_mix ~ ord
     end
 end
 
@@ -2180,15 +2167,15 @@ instance Hashable Float is
     let hash
         : Float -> Int
         = fn x ->
-            hash_mix (hash_combine (float_to_int x) (float_to_int (mul (sub x (int_to_float (float_to_int x))) 1000000.0)))
-          end
+            hash_mix < hash_combine (float_to_int x) (float_to_int < mul (sub x < int_to_float < float_to_int x) 1000000.0)
+        end
     end
 end
 
 instance Hashable (List a) is
     let hash (a : Hashable)
         : List a -> Int
-        = fn xs -> hash_mix (foldl (fn acc, x -> hash_combine acc (hash x) end) 7 xs) end
+        = fn xs -> hash_mix (foldl (fn acc, x -> hash_combine acc < hash x end) 7 xs) end
     end
 end
 
@@ -2197,7 +2184,7 @@ instance Hashable (Maybe a) is
         : Maybe a -> Int
         = match
             Maybe:Nil   -> 11 end
-            Maybe:Val x -> hash_combine 13 (hash x) end
+            Maybe:Val x -> hash_combine 13 < hash x end
         end
     end
 end
@@ -2206,7 +2193,7 @@ instance Hashable (a * b) is
     let hash (a : Hashable) (b : Hashable)
         : (a * b) -> Int
         = match
-            (x * y) -> hash_mix (hash_combine (hash x) (hash y)) end
+            (x * y) -> hash_mix < hash_combine (hash x) (hash y) end
         end
     end
 end

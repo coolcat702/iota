@@ -284,7 +284,7 @@ end
 let pick_best
     : List (Int * Int) -> Gen -> (Int * Gen)
     = fn scored ->
-        choose_from < map fst < filter (eq < foldl max (neg inf) (map rst scored) ~ rst) scored
+        choose_from < map fst < filter (eq (foldl max (neg inf) (map rst scored)) ~ rst) scored
     end
 end
 

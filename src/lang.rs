@@ -68,7 +68,7 @@ intrinsics! {
 	IAnd = "iand", IOr = "ior", IXor = "ixor", IShl = "ishl", IShr = "ishr", ISar = "isar",
 	CharOrd = "ord", CharChr = "chr", IToF = "itof", FToI = "ftoi", UnitVal = "unit",
 	ShowInt = "show_int", ShowFloat = "show_float", FloatRepr = "float_repr",
-	Print = "print", Println = "println", GetLn = "getln",
+	PutStr = "putstr", PutStrLn = "putstrln", GetLn = "getln",
 	IoReturn = "io_return", IoBind = "io_bind",
 	SumLeft = "sum_left", SumRight = "sum_right",
 }

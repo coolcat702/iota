@@ -34,7 +34,7 @@ end
 # A generator seeded from the operating system.
 let from_os
     : IO Gen
-    = fmap seed prim_seed
+    = map seed prim_seed
 end
 
 let state

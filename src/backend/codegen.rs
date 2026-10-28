@@ -227,11 +227,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 	}
 	// idx of first payload field in a ctor obj
 	fn base(&self, did: DataId) -> u32 {
-		if self.wide(did) {
-			2
-		} else {
-			1
-		}
+		if self.wide(did) { 2 } else { 1 }
 	}
 	fn obj_ty(&self, did: DataId, ci: usize) -> StructType<'ctx> {
 		let i = self.ctx.i32_type();
@@ -1913,9 +1909,9 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 					}
 				}
 			}
-			Print | Println => {
+			PutStr | PutStrLn => {
 				let (_, print_f) = self.list_helpers();
-				self.call(print_f, &[a[0], self.i32c((p == Println) as u64).into()]); // consumes the list
+				self.call(print_f, &[a[0], self.i32c((p == PutStrLn) as u64).into()]); // consumes the list
 				self.unit()
 			}
 			GetLn => {
@@ -2106,12 +2102,18 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 						// 	.expect("unknown ctor in case");
 						let t = self.prog.datas[*id].tag_of(c).unwrap_or_else(|| {
 							panic!(
-        "unknown ctor `{}` in case on `{:?}` : data `{}` (id {}) in fn `{}`; ctors = {:?}",
-        c, a,
-        self.prog.datas[*id].name, id,
-        f.get_name().to_string_lossy(),
-        self.prog.datas[*id].ctors.iter().map(|c| &c.name).collect::<Vec<_>>()
-    )
+								"unknown ctor `{}` in case on `{:?}` : data `{}` (id {}) in fn `{}`; ctors = {:?}",
+								c,
+								a,
+								self.prog.datas[*id].name,
+								id,
+								f.get_name().to_string_lossy(),
+								self.prog.datas[*id]
+									.ctors
+									.iter()
+									.map(|c| &c.name)
+									.collect::<Vec<_>>()
+							)
 						});
 						cases.push((self.i32c(t as u64), blocks[i]));
 					}

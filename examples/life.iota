@@ -65,7 +65,7 @@ end
 
 let count
     : World -> Cell -> Int
-    = fork2 (len ~ filter) (flip member) neighbours
+    = fork2 (comp2 len filter) (flip member) neighbours
 end
 
 let survives
@@ -82,7 +82,7 @@ let step
     : World -> World
     = fn w ->
         filter
-            (fork survives (flip member w) (flip count w))
+            (fork survives (flip member w) (count w))
             (nub < append w < bind neighbours w)
     end
 end

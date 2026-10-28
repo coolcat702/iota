@@ -52,7 +52,7 @@ end
 
 let main
     : IO Unit
-    = println (show (eval_op ops "*" 6.0 7.0)) > then
-      (println (show (eval_op ops "/" 1.0 4.0))) > then
-      (println (show (eval_op ops "^" 2.0 3.0)))
+    = println (show (eval_op ops "*" 6.0 7.0)) > then <
+      println (show (eval_op ops "/" 1.0 4.0)) > then <
+      println (show (eval_op ops "^" 2.0 3.0))
 end

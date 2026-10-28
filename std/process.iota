@@ -51,7 +51,7 @@ end
 let run_with_input
     : String -> List String -> String -> IO (Either IOError Output)
     = fn program, args, input ->
-        fmap (either_flat decode_capture ~ io_decode) (prim_run (spec program args) input 0)
+        map (either_flat decode_capture ~ io_decode) (prim_run (spec program args) input 0)
     end
 end
 
@@ -60,7 +60,7 @@ end
 let inherit
     : String -> List String -> IO (Either IOError Int)
     = fn program, args ->
-        fmap (either_map first_int ~ io_decode) (prim_run (spec program args) [] 1)
+        map (either_map first_int ~ io_decode) (prim_run (spec program args) [] 1)
     end
 end
 
@@ -85,7 +85,7 @@ end
 # The environment, as (name, value) pairs.
 let environ
     : IO (List (String * String))
-    = fmap (map split_assignment ~ split_nuls) prim_sys_environ
+    = map (map split_assignment ~ split_nuls) prim_sys_environ
 end
 
 # ---- decoding the runtime's answer ----
