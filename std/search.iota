@@ -159,3 +159,28 @@ let partition_point
             (partition_point p (succ < add lo < div (sub hi lo) 2) hi)
       end
 end
+
+let idx a
+    : List a -> Int -> Maybe a
+    = fn xs -> 
+        fn n ->
+            cond (ls n 0) Maybe:Nil (go xs n)
+        end
+    end
+with go a
+    : List a -> Int -> Maybe a
+    = match
+        [], _ -> Maybe:Nil end
+        List:Cons(x * _), 0 -> Maybe:Val x end
+        List:Cons(_ * xs), n -> go xs (sub n 1) end
+    end
+end
+
+let wrapping_idx a
+    : List a -> Int -> Maybe a
+    = fn xs -> 
+        fn n ->
+            idx xs (mod n (len xs))
+        end
+    end
+end

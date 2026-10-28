@@ -498,31 +498,6 @@ let tail a
     end
 end
 
-let idx a
-    : List a -> Int -> Maybe a
-    = fn xs -> 
-        fn n ->
-            cond (ls n 0) Maybe:Nil (go xs n)
-        end
-    end
-with go a
-    : List a -> Int -> Maybe a
-    = match
-        [], _ -> Maybe:Nil end
-        List:Cons(x * _), 0 -> Maybe:Val x end
-        List:Cons(_ * xs), n -> go xs (sub n 1) end
-    end
-end
-
-let wrapping_idx a
-    : List a -> Int -> Maybe a
-    = fn xs -> 
-        fn n ->
-            idx xs (mod n (len xs))
-        end
-    end
-end
-
 let index_of (a : Eqable)
     : List a -> a -> Maybe Int
     = fn xs ->
@@ -592,7 +567,7 @@ let map_nil a b
     end
 end
 
-let map_nil_same a
+let or_else a
     : a -> Maybe a -> a
     = match
         _, Maybe:Val x -> x end
