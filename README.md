@@ -149,8 +149,15 @@ end
 
 ## Composition Operators
 
-Iota has two composition operators. In order of application, they are:
+Iota has three composition operators. In order of precedence, from tightest to loosest, they are:
 
+- `~`: Compose
+     - `(f ~ g) x = f (g x)`, so `f ~ g = comp f g`.
+     - Binds just below function application: `f x ~ g y = (f x) ~ (g y)`.
+     - Right-associative: `f ~ g ~ h = f ~ (g ~ h)`.
+     - Unlike `<` it produces a function, so it can be passed around: `map (add 1 ~ mul 2) xs`.
+     - The operands are optional. `f ~` is `comp f` (that is, `fn g -> f ~ g end`),
+       `~ g` is `flip comp g` (that is, `fn f -> f ~ g end`), and a bare `~` is `comp`.
 - `<`: Forward Apply
      - `f < g x = f (g x)`
      - You can think of the argument "flowing" with the arrow into the function.
@@ -160,8 +167,17 @@ Iota has two composition operators. In order of application, they are:
      - Effectively the reverse of `<` (`f > g > h = h < g < f`)
      - Left-associative: `f > g > h = (f > g) > h`
 
+The pair constructor `*` (`a * b = pair a b`) sits between `~` and `<`, is right-associative
+(`a * b * c = a * (b * c)`), and takes optional operands in the same way as `~`:
+`a *` is `pair a`, `* b` is `flip pair b` (`fn a -> a * b end`), and a bare `*`, usually
+written `(*)`, is `pair`.
+
+A chain may be missing its first operand or its last one, but not both, unless it has no operands
+at all (a bare `~`): `f ~ g ~` is `comp (f ~ g)` and `~ f ~ g` is `flip comp (f ~ g)`, but `~ f ~`
+and `f ~ ~ g` are errors.
+
 Iota eliminates all value‑level operators.
-Only type combinators (`+`, `*`, `->`) and composition operators (`<`, `>`) exist.
+Only type combinators (`+`, `*`, `->`) and composition operators (`~`, `<`, `>`) exist.
 All other relations are expressed as functions from first principles.
 
 ## Combinators
@@ -563,7 +579,7 @@ let half
     = fork even (comp Maybe:Val (flip div 2)) (const Maybe:Nil)
 with even
     : Int -> Bool
-    = comp (eq 0) (flip mod 2)
+    = eq 0 ~ flip mod 2
 end
 # halves the value if it is even, otherwise returns 'Nil'
 

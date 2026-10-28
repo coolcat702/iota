@@ -178,6 +178,8 @@ enum Token {
 	Star,
 	#[token("+")]
 	Plus,
+	#[token("~")]
+	Tilde,
 	#[token(",")]
 	Comma,
 	#[token("_")]
@@ -247,6 +249,7 @@ impl fmt::Display for Token {
 			Token::Arrow => write!(f, "Symbol '->'"),
 			Token::Star => write!(f, "Symbol '*'"),
 			Token::Plus => write!(f, "Symbol '+'"),
+			Token::Tilde => write!(f, "Symbol '~'"),
 			Token::LAngle => write!(f, "Symbol '<'"),
 			Token::RAngle => write!(f, "Symbol '>'"),
 			Token::Comma => write!(f, "Symbol ','"),
@@ -402,6 +405,39 @@ pub enum Type {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct Program(pub Vec<Spanned<TopLevel>>);
+
+// The two value-level infix operators that may be written without operands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InfixOp {
+	// `~`, function composition. Binds just below application.
+	Compose,
+	// `*`, pairing. Binds just below `~`.
+	Product,
+}
+
+impl InfixOp {
+	fn token(self) -> Token {
+		match self {
+			InfixOp::Compose => Token::Tilde,
+			InfixOp::Product => Token::Star,
+		}
+	}
+
+	fn symbol(self) -> &'static str {
+		match self {
+			InfixOp::Compose => "~",
+			InfixOp::Product => "*",
+		}
+	}
+
+	// The Prelude function that the bare operator stands for.
+	fn function(self) -> &'static str {
+		match self {
+			InfixOp::Compose => "B",
+			InfixOp::Product => "pair",
+		}
+	}
+}
 
 struct Parser {
 	tokens: Vec<Spanned<Token>>,
@@ -628,6 +664,21 @@ impl Parser {
 			return Some(expr);
 		}
 		self.parse_expr(registry)
+	}
+
+	// A Prelude function by its fully qualified name, which a local binding cannot shadow.
+	fn prelude_var(name: &str, span: Span) -> Spanned<Expr> {
+		Spanned {
+			item: Expr::Qualified(Qualified(vec!["Prelude".to_string(), name.to_string()])),
+			span,
+		}
+	}
+
+	fn app(func: Spanned<Expr>, arg: Spanned<Expr>, span: Span) -> Spanned<Expr> {
+		Spanned {
+			item: Expr::App(Box::new(func), Box::new(arg)),
+			span,
+		}
 	}
 
 	fn parse_top_level(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<TopLevel>> {
@@ -901,28 +952,149 @@ impl Parser {
 		Some(expr)
 	}
 
-	fn parse_product_op(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Expr>> {
-		self.debug_print("parse product op");
-		let first = self.parse_app(registry)?;
+	// Does the next token begin an operand of `op`? Atoms do. `*` also takes a `~` expression
+	// as an operand, so `a * ~ b` is `a * (~ b)`.
+	fn starts_operand(&self, op: InfixOp) -> bool {
+		matches!(
+			self.peek().map(|t| &t.item),
+			Some(
+				Token::Ident(_)
+					| Token::IntLit(_)
+					| Token::FloatLit(_)
+					| Token::StringLit(_)
+					| Token::CharLit(_)
+					| Token::Nil | Token::LBracket
+					| Token::LParen | Token::FnKw
+					| Token::Match
+			)
+		) || (op == InfixOp::Product && self.next_is(&Token::Tilde))
+	}
 
-		// `a * b * c` is `a * (b * c)`
+	fn parse_operand(
+		&mut self,
+		registry: &mut SourceRegistry,
+		op: InfixOp,
+	) -> Option<Spanned<Expr>> {
+		match op {
+			InfixOp::Compose => self.parse_app(registry),
+			InfixOp::Product => self.parse_infix(registry, InfixOp::Compose),
+		}
+	}
+
+	// Parses a chain of the infix operator `op`: `~` (composition, tighter) or `*` (pairing).
+	// Both are right-associative: `a ~ b ~ c` is `a ~ (b ~ c)`, `a * b * c` is `a * (b * c)`.
+	//
+	//   f ~ g        B f g        (f ~ g) x = f (g x)        a * b       Product a b
+	//   f ~          B f          fn g -> f ~ g end          a *         pair a
+	//   ~ g          C B g        fn f -> f ~ g end          * b         C pair b
+	//   ~            B                                       *           pair
+	//
+	// The operator needs no operands: a missing operand makes it a section, and with no
+	// operands at all it is the function itself. A missing operand is only allowed at the
+	// start or the end of a chain, and not both at once unless there is nothing in between,
+	// so `f ~ g ~` is `B (f ~ g)` and `~ f ~ g` is `C B (f ~ g)`, but `~ f ~` is an error.
+	//
+	// Everything is desugared to Prelude functions written fully qualified, so that a local
+	// binding called `B`, `C` or `pair` cannot capture them and no fresh variable is invented.
+	fn parse_infix(&mut self, registry: &mut SourceRegistry, op: InfixOp) -> Option<Spanned<Expr>> {
+		self.debug_print("parse infix op");
+		let first = if self.starts_operand(op) {
+			Some(self.parse_operand(registry, op)?)
+		} else {
+			None
+		};
+		if first.is_none() && !self.next_is(&op.token()) {
+			// Not an expression at all: the operand parser reports what is wrong.
+			return self.parse_operand(registry, op);
+		}
+
 		let mut items = vec![first];
-		while self.next_is(&Token::Star) {
-			self.eat(registry, &Token::Star)?;
-			items.push(self.parse_app(registry)?);
-		}
-		let mut expr = items.pop()?;
-		while let Some(left) = items.pop() {
-			expr = Spanned {
-				span: Span::new(self.source_id, left.span.start, expr.span.end),
-				item: Expr::Product(Box::new(left), Box::new(expr)),
+		let mut ops: Vec<Span> = Vec::new();
+		while self.next_is(&op.token()) {
+			ops.push(self.eat(registry, &op.token())?);
+			let item = if self.starts_operand(op) {
+				Some(self.parse_operand(registry, op)?)
+			} else {
+				None
 			};
+			items.push(item);
 		}
-		Some(expr)
+		if ops.is_empty() {
+			return items.pop().flatten();
+		}
+
+		let n = items.len();
+		let open_left = items[0].is_none();
+		let open_right = items[n - 1].is_none();
+		let start = items[0].as_ref().map_or(ops[0].start, |e| e.span.start);
+		let end = items[n - 1]
+			.as_ref()
+			.map_or(ops[ops.len() - 1].end, |e| e.span.end);
+		let whole = Span::new(self.source_id, start, end);
+
+		// The operands between the (possibly missing) first and last ones must all be there.
+		let lo = if open_left { 1 } else { 0 };
+		let hi = if open_right { n - 1 } else { n };
+		let mut operands = Vec::new();
+		for item in items.drain(lo..hi) {
+			match item {
+				Some(e) => operands.push(e),
+				None => {
+					let msg = format!("missing operand of `{}`", op.symbol());
+					self.error(registry, &msg, whole);
+					return None;
+				}
+			}
+		}
+		if open_left && open_right && !operands.is_empty() {
+			let msg = format!(
+				"`{0}` can be missing its first or its last operand, but not both (`{0}` on its own is fine)",
+				op.symbol()
+			);
+			self.error(registry, &msg, whole);
+			return None;
+		}
+
+		// Join the present operands, right-associatively.
+		let mut joined: Option<Spanned<Expr>> = None;
+		while let Some(left) = operands.pop() {
+			joined = Some(match joined {
+				None => left,
+				Some(right) => {
+					let span = Span::new(self.source_id, left.span.start, right.span.end);
+					match op {
+						InfixOp::Product => Spanned {
+							item: Expr::Product(Box::new(left), Box::new(right)),
+							span,
+						},
+						InfixOp::Compose => {
+							let partial = Self::app(Self::prelude_var("B", span), left, span);
+							Self::app(partial, right, span)
+						}
+					}
+				}
+			});
+		}
+
+		let function = Self::prelude_var(op.function(), whole);
+		Some(match (joined, open_left, open_right) {
+			// the operator on its own
+			(None, _, _) => function,
+			// `a ~ b`, `a * b`
+			(Some(e), false, false) => e,
+			// `a ~` is `B a`, `a *` is `pair a`
+			(Some(e), false, true) => Self::app(function, e, whole),
+			// `~ b` is `C B b`, `* b` is `C pair b`
+			(Some(e), true, false) => {
+				let flip = Self::prelude_var("C", whole);
+				Self::app(Self::app(flip, function, whole), e, whole)
+			}
+			(Some(_), true, true) => unreachable!("rejected above"),
+		})
 	}
 
 	fn parse_app_op(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Expr>> {
-		let expr = self.parse_product_op(registry)?;
+		let expr = self.parse_infix(registry, InfixOp::Product)?;
 
 		if self.next_is(&Token::LAngle) {
 			self.eat(registry, &Token::LAngle)?;
