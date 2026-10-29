@@ -125,7 +125,7 @@ let filter_evens
     = filter even
 with even
     : Int -> Bool
-    = comp (eq 0) (flip mod 2)
+    = eq 0 ~ flip mod 2
 end
 ```
 
@@ -137,13 +137,13 @@ let collatz
     = fork (cond even) half next
 with even
     : Int -> Bool
-    = comp (eq 0) (flip mod 2)
+    = eq 0 ~ flip mod 2
 with half
     : Int -> Int
     = flip div 2
 with next
     : Int -> Int
-    = comp (add 1) (mul 3)
+    = add 1 ~ mul 3
 end
 ```
 
@@ -264,7 +264,7 @@ Lists have many functions that operate them, including:
 [1, 2, 3, 4] > map (mul 2)
 # [2, 4, 6, 8]
 
-[1, 2, 3, 4] > filter (comp (eq 0) (flip mod 2))
+[1, 2, 3, 4] > filter (eq 0 ~ flip mod 2)
 # [2, 4]
 
 zip [1, 3, 5, 7] [2, 4, 6, 8]
@@ -381,12 +381,12 @@ end
 
 let from (a : Successable)
     : a -> List a
-    = comp List:Cons < ap pair < comp from succ
+    = List:Cons ~ ap pair (from ~ succ)
 end
 
 let to (a : Orderable)
     : List a -> a -> List a
-    = flip < comp take_while gr
+    = flip < take_while ~ gr
 end
 ```
 
@@ -576,7 +576,7 @@ Here is an example with `Maybe`, which implements the monad class.
 ```iota
 let half
     : Int -> Maybe Int
-    = fork even (comp Maybe:Val (flip div 2)) (const Maybe:Nil)
+    = fork even (Maybe:Val ~ flip div 2) (const Maybe:Nil)
 with even
     : Int -> Bool
     = eq 0 ~ flip mod 2
