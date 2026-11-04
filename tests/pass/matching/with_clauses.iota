@@ -1,0 +1,23 @@
+# with helpers, several in a row
+# out: 3
+# out: 22
+module Main is
+
+let collatz
+    : Int -> Int
+    = ap (ap (cond ~ even) half) next
+with even
+    : Int -> Bool
+    = eq 0 ~ flip mod 2
+with half
+    : Int -> Int
+    = flip div 2
+with next
+    : Int -> Int
+    = succ ~ mul 3
+end
+
+let main
+    : IO Unit
+    = println (collatz 6) > then < println (collatz 7)
+end

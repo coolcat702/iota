@@ -1,0 +1,16 @@
+# pair construction and projection
+# out: 1
+# out: 2
+# out: 3
+# out: (4, 5)
+# out: 7
+module Main is
+
+let main
+    : IO Unit
+    = println (fst (1 * 2))           > then
+    < println (rst (1 * 2))           > then
+    < println (rst (rst (1 * 2 * 3))) > then
+    < println (pair 4 5)              > then
+    < println (fst (pair 7 8))
+end

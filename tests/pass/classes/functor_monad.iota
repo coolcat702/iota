@@ -1,0 +1,62 @@
+# map over List and Maybe; Maybe, Either and List monads
+# out: [2, 3, 4]
+# out: Val 8
+# out: Val 5
+# out: Nil
+# out: Nil
+# out: Right 10
+# out: Left div by zero
+# out: [1, 10, 2, 20]
+module Main is
+
+let half
+    : Int -> Maybe Int
+    = fn n -> cond (eq 0 (mod n 2)) (Maybe:Val (div n 2)) Maybe:Nil end
+end
+
+let safe_div
+    : Int -> Int -> Either String Int
+    = fn a, b -> cond (eq b 0) (Either:Left "div by zero") (Either:Right (div a b)) end
+end
+
+let m1
+    : Maybe Int
+    = return 20 > bind half > bind half
+end
+
+let m2
+    : Maybe Int
+    = return 21 > bind half > bind half
+end
+
+let m3
+    : Maybe Int
+    = return 22 > bind half > bind half
+end
+
+let e1
+    : Either String Int
+    = return 100 > bind (flip safe_div 5) > bind (flip safe_div 2)
+end
+
+let e2
+    : Either String Int
+    = return 100 > bind (flip safe_div 0) > bind (flip safe_div 2)
+end
+
+let l1
+    : List Int
+    = bind (fn x -> [x, mul x 10] end) [1, 2]
+end
+
+let main
+    : IO Unit
+    = println (map (succ) [1, 2, 3])      > then
+    < println (map (mul 2) (Maybe:Val 4)) > then
+    < println m1 > then
+    < println m2 > then
+    < println m3 > then
+    < println e1 > then
+    < println e2 > then
+    < println l1
+end

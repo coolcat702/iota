@@ -1,0 +1,11 @@
+# a Char pattern against an Int
+module Main is
+
+let f
+    : Int -> Int
+    = match
+        'a' -> 1 end
+        _ -> 0 end
+    end
+end
+

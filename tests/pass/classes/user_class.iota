@@ -1,0 +1,45 @@
+# a user class, instances and a constrained helper
+# out: int 5
+# out: yes
+# out: int 1;int 2;
+# out: yes;no;
+module Main is
+
+class Describe a is
+    let describe
+        : a -> String
+    end
+end
+
+instance Describe Int is
+    let describe
+        : Int -> String
+        = fn n -> concat "int " (show n) end
+    end
+end
+
+instance Describe Bool is
+    let describe
+        : Bool -> String
+        = match
+            Bool:True -> "yes" end
+            Bool:False -> "no" end
+        end
+    end
+end
+
+let describe_each (a : Describe)
+    : List a -> String
+    = match
+        [] -> "" end
+        List:Cons (x * xs) -> concat (describe x) (concat ";" (describe_each xs)) end
+    end
+end
+
+let main
+    : IO Unit
+    = println (describe 5)           > then
+    < println (describe Bool:True)   > then
+    < println (describe_each [1, 2]) > then
+    < println (describe_each [Bool:True, Bool:False])
+end

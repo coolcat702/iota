@@ -1,0 +1,11 @@
+# import ... as renames locally
+# out: 5
+module Main is
+
+import file lib/math.iota
+import Math:my_add as plus
+
+let main
+    : IO Unit
+    = println (plus 2 3)
+end

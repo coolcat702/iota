@@ -1,0 +1,8 @@
+# the body is less general than the signature
+module Main is
+
+let g a
+    : a -> a
+    = fn x -> 1 end
+end
+

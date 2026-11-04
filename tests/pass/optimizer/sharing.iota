@@ -1,0 +1,19 @@
+# a value used twice gives the same answer
+# out: 10000
+# out: 10000
+module Main is
+
+let big
+    : Int
+    = len (range 0 5000)
+end
+
+let both
+    : Int -> Int
+    = fn n -> add n n end
+end
+
+let main
+    : IO Unit
+    = println (both big) > then < println (add big big)
+end

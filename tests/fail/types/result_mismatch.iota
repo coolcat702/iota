@@ -1,0 +1,8 @@
+# the body does not have the declared type
+module Main is
+
+let x
+    : Int
+    = "hello"
+end
+

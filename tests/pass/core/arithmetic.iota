@@ -1,0 +1,18 @@
+# integer arithmetic
+# out: 5
+# out: 7
+# out: 42
+# out: 3
+# out: 2
+# out: 12
+module Main is
+
+let main
+    : IO Unit
+    = println (add 2 3)  > then
+    < println (sub 10 3) > then
+    < println (mul 6 7)  > then
+    < println (div 17 5) > then
+    < println (mod 17 5) > then
+    < println (add (mul 2 3) (sub 10 4))
+end

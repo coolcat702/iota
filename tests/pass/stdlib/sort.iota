@@ -1,0 +1,18 @@
+# std/sort.iota
+# out: [1, 2, 3]
+# out: [3, 2, 1]
+# out: [1, 5, 5]
+# out: [apple, fig, pear]
+# out: [3, 2, 1]
+module Main is
+
+import file std/sort.iota
+
+let main
+    : IO Unit
+    = println (Sort:sort [3, 1, 2])                > then
+    < println (Sort:sort_desc [3, 1, 2])           > then
+    < println (Sort:sort [5, 5, 1])                > then
+    < println (Sort:sort ["pear", "apple", "fig"]) > then
+    < println (Sort:sort_by gre [1, 3, 2])
+end

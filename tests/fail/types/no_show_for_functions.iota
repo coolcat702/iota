@@ -1,0 +1,13 @@
+# there is no Showable instance for functions
+module Main is
+
+let f
+    : Int -> Int
+    = id
+end
+
+let main
+    : IO Unit
+    = println f
+end
+

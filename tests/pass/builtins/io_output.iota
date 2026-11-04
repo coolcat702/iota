@@ -1,0 +1,13 @@
+# putstr, putstrln, print and println
+# out: abc
+# out: 42end
+module Main is
+
+let main
+    : IO Unit
+    = putstr "a"   > then
+    < putstr "b"   > then
+    < putstrln "c" > then
+    < print 42     > then
+    < println "end"
+end

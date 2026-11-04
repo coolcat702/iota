@@ -1,0 +1,8 @@
+# a type applied to too many arguments
+module Main is
+
+let x
+    : List Int Int
+    = []
+end
+

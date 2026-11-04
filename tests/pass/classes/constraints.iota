@@ -1,0 +1,44 @@
+# a user class used through a constraint, on Int and String
+# out: 5
+# out: ab
+# out: 6
+# out: xyz
+module Main is
+
+class MyAddable a is
+    let class_add
+        : a -> a -> a
+    end
+end
+
+instance MyAddable Int is
+    let class_add
+        : Int -> Int -> Int
+        = add
+    end
+end
+
+instance MyAddable String is
+    let class_add
+        : String -> String -> String
+        = concat
+    end
+end
+
+let my_add (a : MyAddable)
+    : a -> a -> a
+    = class_add
+end
+
+let sum3 (a : MyAddable)
+    : a -> a -> a -> a
+    = fn x, y, z -> my_add x (my_add y z) end
+end
+
+let main
+    : IO Unit
+    = println (my_add 2 3)     > then
+    < println (my_add "a" "b") > then
+    < println (sum3 1 2 3)     > then
+    < println (sum3 "x" "y" "z")
+end

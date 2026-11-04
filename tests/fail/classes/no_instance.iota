@@ -1,0 +1,8 @@
+# there is no Mulable instance for String
+module Main is
+
+let x
+    : String
+    = mul "a" "b"
+end
+

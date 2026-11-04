@@ -1,0 +1,7 @@
+# an unterminated string literal
+module Main is
+
+let s
+    : String
+    = "abc
+end

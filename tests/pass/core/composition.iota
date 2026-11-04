@@ -1,0 +1,14 @@
+# the ~ < > composition operators
+# out: 11
+# out: 12
+# out: 11
+# out: 15
+module Main is
+
+let main
+    : IO Unit
+    = println ((add 1 ~ mul 2) 5) > then
+    < println (5 > add 1 > mul 2) > then
+    < println (add 1 < mul 2 5) > then
+    < println (foldl add 0 (map (add 1 ~ mul 2) [1, 2, 3]))
+end

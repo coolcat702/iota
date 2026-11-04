@@ -1,0 +1,12 @@
+# IO as a monad: return and bind
+# out: x
+# out: 9
+# out: 11
+module Main is
+
+let main
+    : IO Unit
+    = println "x"                                > then
+    < return 3 > bind (join < comp2 println mul) > then
+    < return 5 > bind (fn a -> bind (println ~ add a) < return 6 end)
+end

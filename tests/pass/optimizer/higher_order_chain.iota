@@ -1,0 +1,14 @@
+# a long chain of composed functions
+# out: 47
+# out: 15
+module Main is
+
+let pipeline
+    : Int -> Int
+    = add 1 ~ mul 2 ~ add 3 ~ mul 4 ~ flip sub 5
+end
+
+let main
+    : IO Unit
+    = println (pipeline 10) > then < println (pipeline 6)
+end

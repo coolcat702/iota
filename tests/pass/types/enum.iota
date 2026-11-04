@@ -1,0 +1,32 @@
+# a type with only nullary constructors
+# out: 3
+# out: 1
+# out: 3
+module Main is
+
+type Color = Red + Green + Blue end
+
+let code
+    : Color -> Int
+    = match
+        Color:Red -> 1 end
+        Color:Green -> 2 end
+        Color:Blue -> 3 end
+    end
+end
+
+let next
+    : Color -> Color
+    = match
+        Color:Red -> Color:Green end
+        Color:Green -> Color:Blue end
+        Color:Blue -> Color:Red end
+    end
+end
+
+let main
+    : IO Unit
+    = println (code Color:Blue)        > then
+    < println (code (next Color:Blue)) > then
+    < println (code (next (next Color:Red)))
+end

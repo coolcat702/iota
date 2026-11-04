@@ -1,0 +1,19 @@
+# partial applications stored in lists and called later
+# out: [11, 12, 13]
+# out: 6
+module Main is
+
+let adders
+    : List (Int -> Int)
+    = map add [1, 2, 3]
+end
+
+let apply_to
+    : Int -> (Int -> Int) -> Int
+    = fn x, f -> f x end
+end
+
+let main
+    : IO Unit
+    = println (map (apply_to 10) adders) > then < println (foldl (fn acc, f -> f acc end) 0 adders)
+end

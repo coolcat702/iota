@@ -1,0 +1,10 @@
+# more patterns than the function has arguments
+module Main is
+
+let f
+    : Int -> Int
+    = match
+        x, y -> x end
+    end
+end
+

@@ -1,0 +1,7 @@
+# output before exit is kept and exit still stops the program
+module Main is
+
+let main
+    : IO Unit
+    = println "before" > then (exit 2) > then (println "after")
+end

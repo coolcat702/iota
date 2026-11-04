@@ -1,0 +1,8 @@
+# a function applied to itself
+module Main is
+
+let f
+    : Int -> Int
+    = fn x -> x x end
+end
+

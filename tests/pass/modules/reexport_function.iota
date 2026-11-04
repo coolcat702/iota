@@ -1,0 +1,10 @@
+# a directory module re-exporting a function
+# out: 4
+module Main is
+
+import file lib/utils_fn/mod.iota
+
+let main
+    : IO Unit
+    = println (Utils:my_add 2 2)
+end

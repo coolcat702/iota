@@ -1,0 +1,7 @@
+module Math is
+
+export my_add
+let my_add
+    : Int -> Int -> Int
+    = add
+end

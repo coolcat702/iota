@@ -1,0 +1,7 @@
+# exit stops the program with the given status
+module Main is
+
+let main
+    : IO Unit
+    = exit 3
+end

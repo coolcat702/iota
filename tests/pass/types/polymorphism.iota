@@ -1,0 +1,26 @@
+# parametric polymorphism used at several types
+# out: 16
+# out: ababc
+# out: (2, 1)
+# out: (3, x)
+module Main is
+
+let twice a
+    : (a -> a) -> a -> a
+    = fn f, x -> f (f x) end
+end
+
+let swap a b
+    : (a * b) -> (b * a)
+    = match
+        (x * y) -> (y * x) end
+    end
+end
+
+let main
+    : IO Unit
+    = println (twice (add 3) 10) > then
+    < println (twice (concat "ab") "c") > then
+    < println (swap (1 * 2)) > then
+    < println (swap ("x" * 3))
+end

@@ -1,0 +1,28 @@
+# the named combinators
+# out: 10
+# out: 14
+# out: 11
+# out: 49
+# out: 9
+# out: 15
+# out: 1
+# out: 9
+# out: 6
+# out: 11
+# out: 6
+module Main is
+
+let main
+    : IO Unit
+    = println (fork add (mul 2) succ 3)    > then
+    < println (over add (mul 2) 3 4)       > then
+    < println (comp succ (mul 2) 5)        > then
+    < println (join mul 7)                 > then
+    < println (flip sub 1 10)              > then
+    < println (ap add (mul 2) 5)           > then
+    < println (const 1 2)                  > then
+    < println (id 9)                       > then
+    < println (thrust 5 succ)              > then
+    < println (fork2 add (mul 2) succ 3 4) > then
+    < println (comp2 succ add 2 3)
+end

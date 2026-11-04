@@ -1,0 +1,29 @@
+# boolean functions; and/or do not evaluate what they do not need
+# out: False
+# out: False
+# out: True
+# out: True
+# out: False
+# out: True
+# out: both
+# out: True
+# out: False
+module Main is
+
+let diverge a
+    : Int -> a
+    = fn n -> diverge n end
+end
+
+let main
+    : IO Unit
+    = println (not Bool:True)                            > then
+    < println (and Bool:True Bool:False)                 > then
+    < println (or Bool:False Bool:True)                  > then
+    < println (xor Bool:True Bool:False)                 > then
+    < println (xor Bool:True Bool:True)                  > then
+    < println (nor Bool:False Bool:False)                > then
+    < println (cond (and (ls 1 2) (gr 3 2)) "both" "no") > then
+    < println (or Bool:True (diverge 0))                 > then
+    < println (and Bool:False (diverge 0))
+end

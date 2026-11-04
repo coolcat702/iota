@@ -1,0 +1,34 @@
+# the Default class
+# out: 0
+# out: |
+# out: []
+# out: Nil
+module Main is
+
+let d_int
+    : Int
+    = default
+end
+
+let d_str
+    : String
+    = default
+end
+
+let d_list
+    : List Int
+    = default
+end
+
+let d_maybe
+    : Maybe Int
+    = default
+end
+
+let main
+    : IO Unit
+    = println d_int              > then
+    < println (concat d_str "|") > then
+    < println d_list             > then
+    < println d_maybe
+end

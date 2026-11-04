@@ -1,0 +1,10 @@
+# an instance of a class that does not exist
+module Main is
+
+instance Nope Int is
+    let nope
+        : Int -> Int
+        = id
+    end
+end
+

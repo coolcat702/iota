@@ -1,0 +1,31 @@
+# the prelude Maybe and Either helpers
+# out: Val 3
+# out: Nil
+# out: Left missing
+# out: 0
+# out: 5
+module Main is
+
+let good
+    : Either String Int
+    = Either:Right 3
+end
+
+let bad
+    : Either String Int
+    = Either:Left "bad"
+end
+
+let nothing
+    : Maybe Int
+    = Maybe:Nil
+end
+
+let main
+    : IO Unit
+    = println (get_right good) > then
+    < println (get_right bad) > then
+    < println (map_nil "missing" nothing) > then
+    < println (or_else 0 nothing) > then
+    < println (or_else 0 (Maybe:Val 5))
+end

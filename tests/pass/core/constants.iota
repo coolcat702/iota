@@ -1,0 +1,27 @@
+# top-level constants and functions of constants
+# out: 40
+# out: hi!
+# out: 60
+module Main is
+
+let base
+    : Int
+    = 20
+end
+
+let doubled
+    : Int
+    = mul base 2
+end
+
+let greeting
+    : String
+    = "hi"
+end
+
+let main
+    : IO Unit
+    = println (show doubled) > then
+    < println (concat greeting "!") > then
+    < println (add base doubled)
+end

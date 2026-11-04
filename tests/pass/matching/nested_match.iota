@@ -1,0 +1,22 @@
+# a match inside a match arm
+# out: none
+# out: zero
+# out: positive
+# out: negative
+module Main is
+
+let classify
+    : Maybe Int -> String
+    = match
+        Maybe:Nil -> "none" end
+        Maybe:Val n -> cond (ls n 0) "negative" (cond (eq n 0) "zero" "positive") end
+    end
+end
+
+let main
+    : IO Unit
+    = println (classify Maybe:Nil)     > then
+    < println (classify (Maybe:Val 0)) > then
+    < println (classify (Maybe:Val 5)) > then
+    < println (classify (Maybe:Val -5))
+end

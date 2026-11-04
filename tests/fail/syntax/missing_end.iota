@@ -1,0 +1,11 @@
+# a binding without its `end`
+module Main is
+
+let x
+    : Int
+    = add 1 2
+
+let y
+    : Int
+    = 3
+end

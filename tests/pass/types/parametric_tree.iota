@@ -1,0 +1,43 @@
+# a recursive parametric type
+# out: 6
+# out: 2
+# out: 60
+module Main is
+
+type Tree a = Leaf + Node (Tree a * (a * Tree a)) end
+
+let total
+    : Tree Int -> Int
+    = match
+        Tree:Leaf -> 0 end
+        Tree:Node (l * (x * r)) -> add (total l) (add x (total r)) end
+    end
+end
+
+let depth a
+    : Tree a -> Int
+    = match
+        Tree:Leaf -> 0 end
+        Tree:Node (l * (_ * r)) -> add 1 (max (depth l) (depth r)) end
+    end
+end
+
+let mapt a b
+    : (a -> b) -> Tree a -> Tree b
+    = fn f -> match
+        Tree:Leaf -> Tree:Leaf end
+        Tree:Node (l * (x * r)) -> Tree:Node (mapt f l * (f x * mapt f r)) end
+    end end
+end
+
+let sample
+    : Tree Int
+    = Tree:Node (Tree:Node (Tree:Leaf * (1 * Tree:Leaf)) * (2 * Tree:Node (Tree:Leaf * (3 * Tree:Leaf))))
+end
+
+let main
+    : IO Unit
+    = println (total sample) > then
+    < println (depth sample) > then
+    < println (total (mapt (mul 10) sample))
+end

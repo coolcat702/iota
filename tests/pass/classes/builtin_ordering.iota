@@ -1,0 +1,28 @@
+# Eqable, Orderable and Successable on the builtin types
+# out: 9
+# out: 3
+# out: True
+# out: True
+# out: False
+# out: True
+# out: 'b'
+# out: 9
+# out: True
+# out: True
+# out: 5
+module Main is
+
+let main
+    : IO Unit
+    = println (max 3 9)            > then
+    < println (min 3 9)            > then
+    < println (eq 'a' 'a')         > then
+    < println (neq 1 2)            > then
+    < println (ls 2 1)             > then
+    < println (gre 3 3)            > then
+    < println (succ 'a')           > then
+    < println (pred 10)            > then
+    < println (eq "ab" "ab")       > then
+    < println (eq (1 * 2) (1 * 2)) > then
+    < println (abs -5)
+end

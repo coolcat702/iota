@@ -1,0 +1,13 @@
+module Math is
+
+export my_add
+let my_add
+    : Int -> Int -> Int
+    = add
+end
+
+export triple
+let triple
+    : Int -> Int
+    = mul 3
+end

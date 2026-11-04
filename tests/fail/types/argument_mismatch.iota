@@ -1,0 +1,8 @@
+# a String where an Int is expected
+module Main is
+
+let x
+    : Int
+    = add 1 "a"
+end
+

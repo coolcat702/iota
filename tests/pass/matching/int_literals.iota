@@ -1,0 +1,21 @@
+# literal and variable patterns
+# out: 0
+# out: 1
+# out: 55
+module Main is
+
+let fib
+    : Int -> Int
+    = match
+        0 -> 0 end
+        1 -> 1 end
+        n -> add (fib (sub n 1)) (fib (sub n 2)) end
+    end
+end
+
+let main
+    : IO Unit
+    = println (fib 0) > then
+    < println (fib 1) > then
+    < println (fib 10)
+end

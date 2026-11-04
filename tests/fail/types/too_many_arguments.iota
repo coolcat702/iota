@@ -1,0 +1,8 @@
+# applying a non-function
+module Main is
+
+let x
+    : Int
+    = add 1 2 3
+end
+

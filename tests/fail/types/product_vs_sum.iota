@@ -1,0 +1,8 @@
+# a pair where a sum is expected
+module Main is
+
+let x
+    : Int + Int
+    = 1 * 2
+end
+

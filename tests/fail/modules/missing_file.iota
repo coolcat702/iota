@@ -1,0 +1,10 @@
+# importing a file that does not exist
+module Main is
+
+import file does_not_exist.iota
+
+let x
+    : Int
+    = 1
+end
+

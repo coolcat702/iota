@@ -1,0 +1,24 @@
+# a match over several arguments
+# out: 3
+# out: 2
+# out: 1
+# out: 0
+module Main is
+
+let rank
+    : Bool -> Bool -> Int
+    = match
+        Bool:True, Bool:True -> 3 end
+        Bool:True, _ -> 2 end
+        _, Bool:True -> 1 end
+        _, _ -> 0 end
+    end
+end
+
+let main
+    : IO Unit
+    = println (rank Bool:True Bool:True)  > then
+    < println (rank Bool:True Bool:False) > then
+    < println (rank Bool:False Bool:True) > then
+    < println (rank Bool:False Bool:False)
+end

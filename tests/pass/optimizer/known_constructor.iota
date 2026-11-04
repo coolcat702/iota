@@ -1,0 +1,25 @@
+# a match on a constructor known at the call site
+# out: 4
+# out: 0
+# out: 3
+module Main is
+
+let bump
+    : Maybe Int -> Int
+    = match
+        Maybe:Val x -> succ x end
+        Maybe:Nil -> 0 end
+    end
+end
+
+let fixed
+    : Int
+    = bump (Maybe:Val 3)
+end
+
+let main
+    : IO Unit
+    = println fixed > then
+    < println (bump Maybe:Nil) > then
+    < println (bump (Maybe:Val (add 1 1)))
+end

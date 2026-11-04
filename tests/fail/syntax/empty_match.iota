@@ -1,0 +1,8 @@
+# a match with no cases
+module Main is
+
+let f
+    : Int -> Int
+    = match
+    end
+end

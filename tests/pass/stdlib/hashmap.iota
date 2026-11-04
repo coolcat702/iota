@@ -1,0 +1,38 @@
+# std/hashmap.iota
+# out: Val 1
+# out: Nil
+# out: 2
+# out: 3
+# out: Val 3
+# out: Nil
+# out: True
+# out: 0
+# out: Nil
+# out: Val 9
+module Main is
+
+import file std/hashmap.iota
+
+let m
+    : HashMap String Int
+    = HashMap:from_list [("a" * 1), ("b" * 2)]
+end
+
+let m2
+    : HashMap String Int
+    = HashMap:insert "c" 3 m
+end
+
+let main
+    : IO Unit
+    = println (HashMap:get "a" m)      > then
+    < println (HashMap:get "z" m)      > then
+    < println (HashMap:size m)         > then
+    < println (HashMap:size m2)        > then
+    < println (HashMap:get "c" m2)     > then
+    < println (HashMap:get "c" m)      > then
+    < println (HashMap:member "b" m)   > then
+    < println (HashMap:get_or 0 "q" m) > then
+    < println (HashMap:get "a" (HashMap:remove "a" m)) > then
+    < println (HashMap:get "a" (HashMap:insert "a" 9 m))
+end

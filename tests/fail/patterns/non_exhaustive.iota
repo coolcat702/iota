@@ -1,0 +1,10 @@
+# a missing constructor
+module Main is
+
+let f
+    : Maybe Int -> Int
+    = match
+        Maybe:Val x -> x end
+    end
+end
+

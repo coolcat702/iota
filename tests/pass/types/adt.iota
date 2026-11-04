@@ -1,0 +1,23 @@
+# a user sum type with payloads
+# out: 12
+# out: 12
+# out: 15
+module Main is
+
+type Shape = Circle Int + Rect (Int * Int) + Tri (Int * Int) end
+
+let area
+    : Shape -> Int
+    = match
+        Shape:Circle r -> mul 3 (mul r r) end
+        Shape:Rect (w * h) -> mul w h end
+        Shape:Tri (b * h) -> div (mul b h) 2 end
+    end
+end
+
+let main
+    : IO Unit
+    = println (area (Shape:Circle 2))    > then
+    < println (area (Shape:Rect (3 * 4))) > then
+    < println (area (Shape:Tri (6 * 5)))
+end

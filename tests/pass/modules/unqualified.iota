@@ -1,0 +1,11 @@
+# import unqualified brings the module's names in
+# out: 12
+# out: 3
+module Main is
+
+import unqualified lib/math.iota
+
+let main
+    : IO Unit
+    = println (Math:triple 4) > then < println (Math:my_add 1 2)
+end

@@ -1,0 +1,31 @@
+# nested list patterns
+# out: 9
+# out: 7
+# out: 0
+# out: 4
+module Main is
+
+let first_two
+    : List Int -> Int
+    = match
+        [] -> 0 end
+        List:Cons (x * []) -> x end
+        List:Cons (x * List:Cons (y * _)) -> add x y end
+    end
+end
+
+let length
+    : List Int -> Int
+    = match
+        [] -> 0 end
+        List:Cons (_ * xs) -> succ (length xs) end
+    end
+end
+
+let main
+    : IO Unit
+    = println (first_two [4, 5, 6]) > then
+    < println (first_two [7])       > then
+    < println (first_two [])        > then
+    < println (length [1, 2, 3, 4])
+end

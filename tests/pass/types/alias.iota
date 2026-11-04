@@ -1,0 +1,15 @@
+# a type alias
+# out: 6
+module Main is
+
+type Ints = List Int end
+
+let total
+    : Ints -> Int
+    = foldl add 0
+end
+
+let main
+    : IO Unit
+    = println (total [1, 2, 3])
+end

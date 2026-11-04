@@ -1,0 +1,8 @@
+# an unknown type name
+module Main is
+
+let x
+    : Foo
+    = 1
+end
+

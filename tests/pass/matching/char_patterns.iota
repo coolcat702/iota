@@ -1,0 +1,21 @@
+# character literals in patterns
+# out: 5
+# out: 0
+module Main is
+
+let vowel
+    : Char -> Int
+    = match
+        'a' -> 1 end
+        'e' -> 1 end
+        'i' -> 1 end
+        'o' -> 1 end
+        'u' -> 1 end
+        _ -> 0 end
+    end
+end
+
+let main
+    : IO Unit
+    = println (foldl (fn acc, c -> add acc (vowel c) end) 0 "education") > then (println (vowel 'x'))
+end

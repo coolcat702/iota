@@ -1,0 +1,16 @@
+# an instance method that does not match the class
+module Main is
+
+class Describe a is
+    let describe
+        : a -> String
+    end
+end
+
+instance Describe Int is
+    let describe
+        : Int -> Int
+        = id
+    end
+end
+

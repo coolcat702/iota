@@ -1,0 +1,16 @@
+# bitwise operations
+# out: 8
+# out: 14
+# out: 6
+# out: 16
+# out: 16
+module Main is
+
+let main
+    : IO Unit
+    = println (bit_and 12 10)  > then
+    < println (bit_or 12 10)   > then
+    < println (bit_xor 12 10)  > then
+    < println (shift_left 1 4) > then
+    < println (shift_right 256 4)
+end

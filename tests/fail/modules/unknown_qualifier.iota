@@ -1,0 +1,8 @@
+# a name from a module that was never imported
+module Main is
+
+let x
+    : Int
+    = Nope:thing 1
+end
+

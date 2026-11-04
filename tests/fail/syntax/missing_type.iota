@@ -1,0 +1,5 @@
+# a binding must have a type annotation
+module Main is
+
+let x = 1
+end

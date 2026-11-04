@@ -1,0 +1,11 @@
+# a qualified call into an imported file
+# out: 4
+# out: 15
+module Main is
+
+import file lib/math.iota
+
+let main
+    : IO Unit
+    = println (Math:my_add 2 2) > then < println (Math:triple 5)
+end

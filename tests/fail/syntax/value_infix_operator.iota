@@ -1,0 +1,7 @@
+# there are no value-level infix operators
+module Main is
+
+let x
+    : Int
+    = 1 + 2
+end

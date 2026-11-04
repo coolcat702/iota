@@ -1,0 +1,21 @@
+# a constrained function used at a type without an instance
+module Main is
+
+class Describe a is
+    let describe
+        : a -> String
+    end
+end
+
+instance Describe Int is
+    let describe
+        : Int -> String
+        = show
+    end
+end
+
+let x
+    : String
+    = describe Bool:True
+end
+

@@ -1,0 +1,23 @@
+# lazy evaluation: infinite lists and unused arguments
+# out: [1, 2, 3, 4, 5]
+# out: 1
+# out: 2
+# out: 1
+# out: 3
+# out: 140
+module Main is
+
+let diverge a
+    : Int -> a
+    = fn n -> diverge n end
+end
+
+let main
+    : IO Unit
+    = println (take 5 (from 1))                     > then
+    < println (cond Bool:True 1 (diverge 0))        > then
+    < println (const 2 (diverge 0))                 > then
+    < println (fst (1 * diverge 0))                 > then
+    < println (len (take 3 (map (mul 2) (from 0)))) > then
+    < println (foldl add 0 (take_while (gr 50) (map (join mul) (from 1))))
+end

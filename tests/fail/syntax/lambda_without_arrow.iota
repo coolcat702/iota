@@ -1,0 +1,7 @@
+# fn needs an arrow
+module Main is
+
+let f
+    : Int -> Int
+    = fn x mul x 2 end
+end

@@ -1,0 +1,18 @@
+# Float arithmetic and conversion
+# out: 10
+# out: 3
+# out: yes
+# out: 4
+# out: same
+# out: 9
+module Main is
+
+let main
+    : IO Unit
+    = println (float_to_int (mul 2.5 4.0))              > then
+    < println (float_to_int (add (int_to_float 3) 0.5)) > then
+    < println (cond (gr 2.5 2.0) "yes" "no")            > then
+    < println (float_to_int (div 9.0 2.0))              > then
+    < println (cond (eq 1.5 1.5) "same" "diff")         > then
+    < println (float_to_int (sub 10.0 0.5))
+end

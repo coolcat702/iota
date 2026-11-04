@@ -1,0 +1,11 @@
+# a constructor of another type
+module Main is
+
+let f
+    : Maybe Int -> Int
+    = match
+        Either:Left x -> 1 end
+        _ -> 0 end
+    end
+end
+

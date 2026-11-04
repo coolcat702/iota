@@ -1,0 +1,7 @@
+# a character that is not a token
+module Main is
+
+let x
+    : Int
+    = 1 ` 2
+end

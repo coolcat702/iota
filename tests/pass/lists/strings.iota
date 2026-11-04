@@ -1,0 +1,22 @@
+# strings are lists of chars
+# out: foobar
+# out: cba!
+# out: 5
+# out: 97
+# out: 'b'
+# out: 'x'
+# out: ab
+# out: False
+module Main is
+
+let main
+    : IO Unit
+    = println (concat "foo" "bar") > then
+    < println (concat (reverse "abc") "!") > then
+    < println (len "hello") > then
+    < println (ord 'a') > then
+    < println (chr 98) > then
+    < println 'x' > then
+    < println (take 2 "abcd") > then
+    < println (eq "a" "b")
+end

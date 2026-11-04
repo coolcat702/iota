@@ -1,0 +1,8 @@
+# a rigid type variable cannot be an Int
+module Main is
+
+let f a
+    : a -> Int
+    = fn x -> x end
+end
+

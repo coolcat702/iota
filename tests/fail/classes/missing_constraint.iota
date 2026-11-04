@@ -1,0 +1,8 @@
+# using a class method on an unconstrained type variable
+module Main is
+
+let f a
+    : a -> String
+    = show
+end
+

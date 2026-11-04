@@ -1,0 +1,41 @@
+# recursion, accumulators and mutual recursion
+# out: 3628800
+# out: 6
+# out: 100000
+# out: True
+# out: True
+module Main is
+
+let fact
+    : Int -> Int
+    = fn n -> cond (lse n 1) 1 (mul n < fact < pred n) end
+end
+
+let gcd
+    : Int -> Int -> Int
+    = fn a, b -> cond (eq b 0) a (gcd b < mod a b) end
+end
+
+let count
+    : Int -> Int -> Int
+    = fn n, acc -> cond (eq n 0) acc (count (pred n) (succ acc)) end
+end
+
+let is_even
+    : Int -> Bool
+    = fn n -> cond (eq n 0) Bool:True (is_odd (pred n)) end
+end
+
+let is_odd
+    : Int -> Bool
+    = fn n -> cond (eq n 0) Bool:False (is_even (pred n)) end
+end
+
+let main
+    : IO Unit
+    = println (fact 10)        > then
+    < println (gcd 48 18)      > then
+    < println (count 100000 0) > then
+    < println (is_even 10)     > then
+    < println (is_odd 7)
+end

@@ -1,0 +1,8 @@
+# a type constructor used without its argument
+module Main is
+
+let x
+    : Maybe
+    = Maybe:Nil
+end
+

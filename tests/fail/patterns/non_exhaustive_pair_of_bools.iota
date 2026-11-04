@@ -1,0 +1,11 @@
+# one combination is missing
+module Main is
+
+let f
+    : Bool -> Bool -> Int
+    = match
+        Bool:True, Bool:True -> 1 end
+        Bool:False, _ -> 2 end
+    end
+end
+

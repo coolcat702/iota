@@ -1,0 +1,24 @@
+# arguments that are never used are never evaluated
+# out: 1
+# out: 2
+module Main is
+
+let diverge a
+    : Int -> a
+    = fn n -> diverge n end
+end
+
+let first
+    : Int -> Int -> Int
+    = fn x, y -> x end
+end
+
+let ignore3
+    : Int -> Int -> Int -> Int
+    = fn a, b, c -> b end
+end
+
+let main
+    : IO Unit
+    = println (first 1 (diverge 0)) > then < println (ignore3 (diverge 0) 2 (diverge 0))
+end
