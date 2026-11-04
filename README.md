@@ -7,7 +7,7 @@ expressed with functions and types.
 In Iota:
 
 - There are no infix value‑level operators; everything is defined as a function.
-- The type system is algebraic and explicit, using `+` and `*` for sums and products, and `-> for functions.
+- The type system is algebraic and explicit, using `+` and `*` for sums and products, and `->` for functions.
 - Control flow and effects are modeled via church pattern matching and monadic types
   like Maybe and Either rather than imperative statements.
 
@@ -33,6 +33,7 @@ Iota is well‑suited for:
 - [Conditionals](#conditionals)
 - [Type Classes](#type-classes)
 - [Type Constraints](#type-constraints)
+- [Dependent Types](#dependent-types)
 - [Ranges](#ranges)
 - [Modules and Imports](#modules-and-imports)
 - [Error Handling](#error-handling)
@@ -52,6 +53,9 @@ iota prog.iota --emit llvm -o prog.ll      # textual LLVM IR
 iota prog.iota --opt-mode aggressive       # inlining + partial evaluation
 iota prog.iota --run -- a b c              # run it with the command line arguments a, b, c
 ```
+
+Tests: `tests/run_tests.sh` runs the tests (positive programs with expected output, programs that
+must be rejected, run-time traps).
 
 The prelude, the lang manifest (`prelude/lang.def`) and the C runtime are embedded in the compiler
 binary (override with `--prelude`, `--lang`). Diagnostics are rendered with
@@ -355,6 +359,10 @@ let concat_non_strs (a : Showable) (b : Showable)
 end
 ```
 
+A binder can also carry a kind instead of a class: `(a : Type)`, `(f : Type -> Type)`, or a promoted
+data type such as `(n : Nat)`. In a binder, `(0 n : Nat)` marks the parameter as erased (see
+[Dependent Types](#dependent-types)); a linear `(1 x : T)` binder is not supported there yet.
+
 ## Default Type Classes
 
 The default type classes are:
@@ -367,6 +375,163 @@ Showable, Parseable,
 Functor, Monad,
 Default
 ```
+
+## Dependent Types
+
+Types can depend on type-level numbers and Bools. All of it is checked at compile time and
+erased before code generation: a `Vec 3 Int` and a `Vec 4 Int` have the same runtime layout,
+so nothing here costs anything at runtime.
+
+### Kinds
+
+Every type has a kind: `Type`, a promoted data type such as `Nat` or `Bool`, or an arrow
+between kinds. Kinds are inferred; write one when you need to.
+
+```
+type Vec (n : Nat) a = ...        # Vec : Nat -> Type -> Type
+type Tuple (n : Nat) a : Type = match ... end end
+```
+
+Applying a type to the wrong kind (`Vec Int a`, `Maybe Maybe`) is a kind error.
+`IOTA_KIND_WARN=1` turns kind errors into warnings.
+
+### Type-level numbers and Bools
+
+A non-negative literal is a type: `Vec 3 Int`. `Add`, `Mul`, `Sub` and `Nat:Succ` compute on
+them, `Ls` / `Lse` compare them and give `Bool:True` / `Bool:False`. Ring laws hold
+automatically (`Add n m` is `Add m n`); an equation the compiler cannot decide is an error
+(`cannot prove the type-level equality`).
+
+```
+let append_vec a n m
+    : Vec n a -> Vec m a -> Vec (Add n m) a
+```
+
+Type-level numbers are unsigned (`Vec +3 a` is an error) and can be as large as a `u64`.
+Value-level `Int` literals must fit in 32 bits; a longer one is a compile error.
+
+### Type-level functions
+
+A closed `match` over types defines a function on them. Recursion must be structural, and
+`--type-fuel N` bounds the work per application (default 10000).
+
+```
+type Tuple (n : Nat) a : Type = match
+    Nat:Zero, _     -> Unit end
+    Nat:Succ k, a   -> a * Tuple k a end
+end end
+
+let pair : Tuple 2 Int = (1 * (2 * unit)) end
+```
+
+### Indexed data (GADTs)
+
+A constructor may say what it produces: `Ctor payload : Result`. Matching it teaches the
+checker the index inside that branch, impossible cases need no arm, and a branch may refine
+a runtime type parameter too.
+
+```
+type Vec (n : Nat) a =
+    Nil                 : Vec 0 a
+  + Cons (a * Vec n a)  : Vec (Nat:Succ n) a
+end
+
+let head a : (0 n : Nat) -> Vec (Nat:Succ n) a -> a =     # only `Cons` is possible
+    match Vec:Cons (x * _) -> x end end
+end
+
+type Expr a =                                              # a typed evaluator
+    IntE Int                          : Expr Int
+  + BoolE Bool                        : Expr Bool
+  + AddE (Expr Int * Expr Int)        : Expr Int
+  + IfE (Expr Bool * (Expr a * Expr a)) : Expr a
+end
+```
+
+### Quantities and dependent arrows
+
+`(0 n : Nat) -> T` is erased: callers do not pass `n`; unification infers it.
+`(n : Nat) -> T` takes the number at run time as a _singleton_ `SNat n` (`SZ`, `SS`), so the
+function can match on it. A constant argument is turned into the numeral for you:
+
+```
+let replicate a : (n : Nat) -> a -> Vec n a = match
+    SNat:SZ, _      -> Vec:Nil end
+    SNat:SS k, x    -> Vec:Cons (x * replicate k x) end
+end end
+
+let size : Int = mul 2 2 end                 # a compile-time constant
+let v : Vec 4 Int = replicate size 7 end     # also `replicate 4 7`, `replicate (add 1 3) 7`
+```
+
+Constants are `Int` literals, `add`/`sub`/`mul`/`div`/`mod` of constants, and top-level
+`let k : Int = <constant>`, evaluated with the same arithmetic as the run-time. For a number
+you only know as an `SNat n`, use `snat_succ`, `snat_add`, `snat_to_int`. `(b : Bool) -> T`
+works the same way with `SBool` (`STrue`, `SFalse`).
+
+At run time an `SNat n` is just an `Int`, so a constant argument can be as large as an `Int`
+(`count 1000000 0`) and costs nothing to build.
+
+Constructors of a plain data type can be used in types too (`Color:Red`), and type functions
+can compute over them. A dependent binder `(c : Color) -> T` needs a singleton type `SColor`
+declared next to it, like `SNat` for `Nat`.
+
+### Dependent pairs
+
+`(n : Nat) * T` is a value together with its hidden index: build and match it with the usual
+pair syntax. `(0 n : Nat) * T` erases the first component.
+
+```
+let from_list a : List a -> (n : Nat) * Vec n a = match
+    []                  -> (SNat:SZ * Vec:Nil) end
+    List:Cons (x * xs)  -> cons_sig x (from_list xs) end
+end end
+
+let three : (n : Nat) * Vec n Int = (3 * Vec:Cons (1 * Vec:Cons (2 * Vec:Cons (3 * Vec:Nil)))) end
+```
+
+Matching opens an abstract index. It may be used inside the branch but cannot escape it (not
+in the result, not into an outer variable, not equated with a number): that is what keeps
+the pair sealed. A hidden _type_ (`Pack (a * (a -> Int)) : Box`) is rejected.
+
+A dependent pair is an ordinary type, so it can head a class instance:
+`instance Sized ((n : Nat) * Vec n a) is ... end`.
+
+### Proofs
+
+`Equal a b` is an ordinary type with one constructor, `Refl : Equal n n`. Matching it makes
+`a` and `b` equal inside the branch, even when one is a stuck type-function application, so
+proofs by induction work:
+
+```
+let double_add n : SNat n -> Equal (Double n) (Add n n) = match
+    SNat:SZ     -> Equal:Refl end
+    SNat:SS k   -> step k (double_add k) end
+end end
+```
+
+A function whose result is a proof type, or that has an erased `(0 x : T)` binder, must be
+**total**: it needs a body, and may only recurse on a structural subterm of one fixed
+argument. Mutual recursion between such functions is rejected.
+
+### Linear arguments
+
+`(1 h : Handle) -> T` is an ordinary function type whose argument must be used exactly once:
+not dropped (`_`), not duplicated, not captured by a closure, used in every branch of a
+`match`, and passed only to a constructor or to another linear parameter.
+
+This also holds inside `with` helpers, instance methods and class methods. For linear `IO`,
+use `lreturn` and `lbind`, whose continuation takes its argument linearly.
+
+```
+lreturn : (1 x : a) -> IO a
+lbind   : ((1 x : a) -> IO b) -> IO a -> IO b
+```
+
+### Error recovery
+
+An unsound type never becomes undefined behaviour: a case the types rule out is pruned from
+the match and traps cleanly (`non-exhaustive pattern match`) if it were ever reached.
 
 ## Ranges
 

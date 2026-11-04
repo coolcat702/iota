@@ -439,19 +439,19 @@ fn fold_intrinsic(op: Intrinsic, args: &[Atom], lang: &Lang) -> Option<Folded> {
 	let b = |v: bool| Folded::Ctor(lang.bool_ctor(v).to_string());
 	match (op, lits.as_slice()) {
 		(IAdd, [Literal::Int(a), Literal::Int(c)]) => {
-			Some(Folded::Lit(Literal::Int(a.wrapping_add(*c))))
+			Some(Folded::Lit(Literal::Int(crate::arith::iadd(*a, *c))))
 		}
 		(ISub, [Literal::Int(a), Literal::Int(c)]) => {
-			Some(Folded::Lit(Literal::Int(a.wrapping_sub(*c))))
+			Some(Folded::Lit(Literal::Int(crate::arith::isub(*a, *c))))
 		}
 		(IMul, [Literal::Int(a), Literal::Int(c)]) => {
-			Some(Folded::Lit(Literal::Int(a.wrapping_mul(*c))))
+			Some(Folded::Lit(Literal::Int(crate::arith::imul(*a, *c))))
 		}
-		(IDiv, [Literal::Int(a), Literal::Int(c)]) if *c != 0 => {
-			Some(Folded::Lit(Literal::Int(a.wrapping_div_euclid(*c))))
+		(IDiv, [Literal::Int(a), Literal::Int(c)]) => {
+			crate::arith::idiv(*a, *c).map(|v| Folded::Lit(Literal::Int(v)))
 		}
-		(IMod, [Literal::Int(a), Literal::Int(c)]) if *c != 0 => {
-			Some(Folded::Lit(Literal::Int(a.wrapping_rem_euclid(*c))))
+		(IMod, [Literal::Int(a), Literal::Int(c)]) => {
+			crate::arith::imod(*a, *c).map(|v| Folded::Lit(Literal::Int(v)))
 		}
 		(ShowInt, [Literal::Int(a)]) => Some(Folded::Str(a.to_string())),
 		(IEq, [Literal::Int(a), Literal::Int(c)]) => Some(b(a == c)),

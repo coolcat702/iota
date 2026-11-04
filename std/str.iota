@@ -202,7 +202,7 @@ end
 # Splits at every character satisfying the predicate: "a,b,,c" gives ["a", "b", "", "c"].
 let split_by
     : (Char -> Bool) -> String -> List String
-    = fn p, s -> split_by_step p ((take_while < not ~ p) (drop_until p s)) s end
+    = fn p, s -> split_by_step p (take_while (not ~ p) s) (drop_until p s) end
 end
 
 let split_by_step

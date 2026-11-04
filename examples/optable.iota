@@ -39,20 +39,14 @@ end
 
 let eval_op
     : OpTable -> String -> Float -> Float -> Maybe Float
-    = fn table ->
-        fn op_name ->
-            fn x ->
-                fn y ->
-                    maybe_map (fn f -> f x y end) (find_op table op_name)
-                end
-            end
-        end
+    = fn table, op_name, x, y ->
+        map (fn f -> f x y end) (find_op table op_name)
     end
 end
 
 let main
     : IO Unit
-    = println (show (eval_op ops "*" 6.0 7.0)) > then <
-      println (show (eval_op ops "/" 1.0 4.0)) > then <
-      println (show (eval_op ops "^" 2.0 3.0))
+    = println (show (eval_op ops "*" 6.0 7.0)) > then
+    < println (show (eval_op ops "/" 1.0 4.0)) > then
+    < println (show (eval_op ops "^" 2.0 3.0))
 end

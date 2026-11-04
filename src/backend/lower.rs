@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::diag::Diagnostic;
 use crate::ir::{
-	Atom, CasePat, Expr, Extern, Function, IrProgram, Side, Value, display_ty, peel_fn,
+	Arm, Atom, CasePat, Expr, Extern, Function, IrProgram, Side, Value, display_ty, peel_fn,
 };
 use crate::lang::{Intrinsic, Lang, LangItem, bare, split_ctor};
 use crate::parser::{Literal, Span};
@@ -201,6 +201,8 @@ impl<'a> L<'a> {
 		let t = self.ti.norm(t);
 		Ok(match &t {
 			Ty::Unit | Ty::Var(_) => MTy::Unit,
+			// a bare index never has a runtime value (R1)
+			Ty::Lit(_) => MTy::Unit,
 			Ty::Int => MTy::Int,
 			Ty::Float => MTy::Float,
 			Ty::Char => MTy::Char,
@@ -211,13 +213,38 @@ impl<'a> L<'a> {
 				let (h, args) = spine(&t);
 				match h {
 					Ty::Named(n) => {
+						// a dependent pair is just its payload product
+						if let Some(def) = self.ti.sigma_defs.get(n.as_str())
+							&& args.len() == def.nparams
+						{
+							let mut m: HashMap<u32, Ty> = HashMap::new();
+							for (i, a) in args.iter().enumerate() {
+								m.insert(crate::typechecker::SIGMA_PARAM + i as u32, (*a).clone());
+							}
+							let payload = crate::ir::subst_ty(&def.payload, &m);
+							return self.canon(&payload);
+						}
+						// a natural-number singleton is a machine Int
+						if n == "SNat" && args.len() == 1 {
+							return Ok(MTy::Int);
+						}
 						if let (true, [a]) =
 							(n == self.lang.item(LangItem::IoType), args.as_slice())
 						{
 							return Ok(MTy::Fn(Box::new(MTy::Unit), Box::new(self.canon(a)?)));
 						}
 						if self.ti.type_ctors.contains_key(n) {
-							let args: Vec<Ty> = args.into_iter().cloned().collect();
+							// strip type-level indices so `Vec 3 a` and `Vec 4 a` share one layout
+							let args: Vec<Ty> = args
+								.into_iter()
+								.map(|a| {
+									if crate::types::is_index_ty(a) || matches!(a, Ty::Var(_)) {
+										Ty::Unit
+									} else {
+										a.clone()
+									}
+								})
+								.collect();
 							let n = n.clone();
 							return self.intern_data(&n, &args);
 						}
@@ -492,8 +519,13 @@ impl<'a> L<'a> {
 				let mut pre: Pre = Vec::new();
 				let ms = self.atom(fr, a, &mut pre)?;
 				let mut out = Vec::new();
-				for arm in arms {
+				// `SZ` is the Int test `0`; `SS` is every other value, so it must come last
+				let mut ordered: Vec<&Arm> = arms.iter().collect();
+				ordered.sort_by_key(|a| !matches!(&a.pat, CasePat::Ctor(t) if t == "SNat:SZ"));
+				for arm in ordered {
 					let (pat, ctor) = match &arm.pat {
+						CasePat::Ctor(t) if t == "SNat:SZ" => (MPat::Int(0), None),
+						CasePat::Ctor(t) if t == "SNat:SS" => (MPat::Wild, Some(t.clone())),
 						CasePat::Wild => (MPat::Wild, None),
 						CasePat::Lit(Literal::Int(n)) => (MPat::Int(*n), None),
 						CasePat::Lit(Literal::Char(c)) => (MPat::Char(*c), None),
@@ -702,6 +734,14 @@ impl<'a> L<'a> {
 				let ma = self.atom(fr, a, pre)?;
 				Ok(VR::Val(MValue::Proj(ma, *side)))
 			}
+			Value::Ctor(tag, None) if tag == "SNat:SZ" => Ok(VR::Val(MValue::Atom(MAtom::Int(0)))),
+			Value::Ctor(tag, Some(p)) if tag == "SNat:SS" => {
+				let mp = self.atom(fr, p, pre)?;
+				Ok(VR::Val(MValue::Prim(
+					Intrinsic::IAdd,
+					vec![mp, MAtom::Int(1)],
+				)))
+			}
 			Value::Ctor(tag, payload) => {
 				let pm = match payload {
 					Some(a) => Some(self.atom(fr, a, pre)?),
@@ -719,6 +759,12 @@ impl<'a> L<'a> {
 					.ok_or_else(|| {
 						"internal: `unwrap` of a value whose constructor is not known".to_string()
 					})?;
+				if ctor == "SNat:SS" {
+					return Ok(VR::Val(MValue::Prim(
+						Intrinsic::ISub,
+						vec![ma, MAtom::Int(1)],
+					)));
+				}
 				Ok(VR::Val(MValue::Unwrap(ma, ctor)))
 			}
 			Value::Str(s) => Ok(VR::Val(MValue::Str(s.clone()))),

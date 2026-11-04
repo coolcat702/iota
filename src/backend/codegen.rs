@@ -225,7 +225,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 	fn wide(&self, did: DataId) -> bool {
 		self.prog.datas[did].is_wide()
 	}
-	// idx of first payload field in a ctor obj
+	/// idx of first payload field in a ctor obj
 	fn base(&self, did: DataId) -> u32 {
 		if self.wide(did) { 2 } else { 1 }
 	}
@@ -252,11 +252,11 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		}
 		self.ctx.struct_type(&f, false)
 	}
-	// Same object seen as `{ header, result }` once a thunk is evaluated
+	/// Same object seen as `{ header, result }` once a thunk is evaluated
 	fn res_ty(&self, ret: &MTy) -> StructType<'ctx> {
 		self.clo_ty(std::slice::from_ref(ret))
 	}
-	// a thunk big enough for either its captures or result
+	/// a thunk big enough for either its captures or result
 	fn thunk_alloc_ty(&self, caps: &[MTy], ret: &MTy) -> StructType<'ctx> {
 		let mut off = 0u64;
 		for c in caps {
@@ -366,7 +366,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		self.call(f, &[gs.as_pointer_value().into()]);
 	}
 
-	// bit 0 of tagged word/susp
+	/// bit 0 of tagged word/susp
 	fn is_imm(&self, p: PointerValue<'ctx>) -> IntValue<'ctx> {
 		let low = ok!(self.b.build_and(self.p2i(p), self.i64c(1), ""));
 		ok!(self
@@ -398,7 +398,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 			.build_int_compare(IntPredicate::UGE, st, self.i32c(ST_UNEVAL), ""))
 	}
 
-	// check if non-imm ptr of a `Direct` type is a thunk
+	/// check if non-imm ptr of a `Direct` type is a thunk
 	fn is_thunk_direct(
 		&mut self,
 		f: FunctionValue<'ctx>,
@@ -527,8 +527,8 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 			.build_store(obj, ok!(self.b.build_int_add(rc, self.i32c(1), ""))));
 	}
 
-	// `if rc == 1 { goto last } else { rc -= 1; return }`
-	// leaves builder in `last`
+	/// `if rc == 1 { goto last } else { rc -= 1; return }`
+	/// leaves builder in `last`
 	fn release_or_return(&self, f: FunctionValue<'ctx>, obj: PointerValue<'ctx>) {
 		let rc = ok!(self.b.build_load(self.ctx.i32_type(), obj, "")).into_int_value();
 		let last = self.new_bb(f, "last");
@@ -923,8 +923,8 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		}
 	}
 
-	// `force$t(susp) -> t`
-	// evaluate a suspension to a value.
+	/// `force$t(susp) -> t`
+	/// evaluate a suspension to a value.
 	fn emit_force(&mut self, f: FunctionValue<'ctx>, t: &MTy) {
 		let e = self.new_bb(f, "entry");
 		self.b.position_at_end(e);
@@ -1215,7 +1215,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		self.to_sb_fn.expect("list_helpers builds to_sb")
 	}
 
-	// `(from_buf(ptr buf, i64 len) -> List Char, print_list(List Char, i32 newline) -> void)`
+	/// `(from_buf(ptr buf, i64 len) -> List Char, print_list(List Char, i32 newline) -> void)`
 	fn list_helpers(&mut self) -> (FunctionValue<'ctx>, FunctionValue<'ctx>) {
 		if let Some(h) = self.helpers {
 			return h;
@@ -1928,7 +1928,7 @@ impl<'ctx, 'p> CodeGen<'ctx, 'p> {
 		}
 	}
 
-	// emit in a loop instead of recursion in case a function has a really long let chain
+	/// emit in a loop instead of recursion in case a function has a really long let chain
 	fn expr(&mut self, st: &mut St<'ctx>, e: &MExpr) {
 		let mut e = e;
 		loop {

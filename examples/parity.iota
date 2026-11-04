@@ -3,19 +3,19 @@ module Main is
 let main
     : IO Unit
     = println "Enter a number:" > then
-    (getln > (bind fn num ->
+    < getln > bind fn num ->
         println < output num
-    end))
+    end
 with output
     : String -> String
-    = fn s -> concat (concat s " is ") (parity s) end
+    = fork concat (flip concat " is ") parity
 with parity
     : String -> String
     = fn s -> cond (even (parse_or_default s)) "Even" "Odd" end
 with even
     : Int -> Bool
-    = fn x -> eq 0 (mod x 2) end
+    = eq 0 ~ flip mod 2
 with parse_or_default (a : Parseable, Default)
     : String -> a
-    = fn s -> or_else default (parse s) end
+    = or_else default ~ parse
 end

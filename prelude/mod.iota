@@ -43,6 +43,19 @@ end
 type Nat = Zero + Succ Nat
 end
 
+# The singleton of a type-level number: exactly one value for each `n`, so a function that
+# takes one learns `n` (this is what `(n : Nat) -> ...` stands for)
+type SNat (n : Nat) =
+    SZ              : SNat 0
+  + SS (SNat n)     : SNat (Nat:Succ n)
+end
+
+# the singleton of a type-level Bool, for `(b : Bool) -> ...` / `(b : Bool) * ...`
+type SBool (b : Bool) =
+    STrue           : SBool Bool:True
+  + SFalse          : SBool Bool:False
+end
+
 # ============================================================
 
 # Type-specific compiler inserted functions
@@ -72,9 +85,7 @@ end
 
 let K a b
     : a -> b -> a
-    = fn x ->
-        fn y -> x end
-    end
+    = fn x, y -> x end
 end
 
 let const a b
@@ -84,13 +95,7 @@ end
 
 let S a b c
     : (a -> b -> c) -> (a -> b) -> a -> c
-    = fn f ->
-        fn g ->
-            fn x ->
-                f x (g x)
-            end
-        end
-    end
+    = fn f, g, x -> f x (g x) end
 end
 
 let ap a b c
@@ -100,13 +105,7 @@ end
 
 let C a b c
     : (a -> b -> c) -> b -> a -> c
-    = fn f ->
-        fn y ->
-            fn x ->
-                f x y
-            end
-        end
-    end
+    = fn f, x, y -> f y x end
 end
 
 let flip a b c
@@ -116,15 +115,7 @@ end
 
 let Phi a b c d
     : (b -> c -> d) -> (a -> b) -> (a -> c) -> a -> d
-    = fn f ->
-        fn g ->
-            fn h ->
-                fn x ->
-                    f (g x) (h x)
-                end
-            end
-        end
-    end
+    = fn f, g, h, x -> f (g x) (h x) end
 end
 
 let fork a b c d
@@ -134,17 +125,7 @@ end
 
 let D2 a b c d e
     : (b -> c -> d) -> (a -> b) -> (e -> c) -> a -> e -> d
-    = fn f ->
-        fn g ->
-            fn h ->
-                fn x ->
-                    fn y ->
-                        f (g x) (h y)
-                    end
-                end
-            end
-        end
-    end
+    = fn f, g, h, x, y -> f (g x) (h y) end
 end
 
 let fork2 a b c d e
@@ -154,15 +135,7 @@ end
 
 let Psi a b c
     : (b -> b -> c) -> (a -> b) -> a -> a -> c
-    = fn f ->
-        fn g ->
-            fn x ->
-                fn y ->
-                    f (g x) (g y)
-                end
-            end
-        end
-    end
+    = fn f, g, x, y -> f (g x) (g y) end
 end
 
 let over a b c
@@ -172,13 +145,7 @@ end
 
 let B a b c
     : (b -> c) -> (a -> b) -> a -> c
-    = fn f ->
-        fn g ->
-            fn x ->
-                f (g x)
-            end
-        end
-    end
+    = fn f, g, x -> f (g x) end
 end
 
 let comp a b c
@@ -188,15 +155,7 @@ end
 
 let B1 a b c d
     : (c -> d) -> (a -> b -> c) -> a -> b -> d
-    = fn f ->
-        fn g ->
-            fn x ->
-                fn y ->
-                    f (g x y)
-                end
-            end
-        end
-    end
+    = fn f, g, x, y -> f (g x y) end
 end
 
 let comp2 a b c d
@@ -206,17 +165,7 @@ end
 
 let B2 a b c d e
     : (d -> e) -> (a -> b -> c -> d) -> a -> b -> c -> e
-    = fn f ->
-        fn g ->
-            fn x ->
-                fn y ->
-                    fn z ->
-                        f (g x y z)
-                    end
-                end
-            end
-        end
-    end
+    = fn f, g, x, y, z -> f (g x y z) end
 end
 
 let comp3 a b c d e
@@ -226,11 +175,7 @@ end
 
 let T a b
     : a -> (a -> b) -> b
-    = fn x ->
-        fn f ->
-            f x
-        end
-    end
+    = fn x, f -> f x end
 end
 
 let thrust a b
@@ -240,11 +185,7 @@ end
 
 let W a b
     : (a -> a -> b) -> a -> b
-    = fn f ->
-        fn x ->
-            f x x
-        end
-    end
+    = fn f, x -> f x x end
 end
 
 let join a b
@@ -260,11 +201,7 @@ end
 
 let pair a b
     : a -> b -> (a * b)
-    = fn a ->
-        fn b ->
-            a * b
-        end
-    end
+    = fn a, b -> a * b end
 end
 
 let fst a b
@@ -663,24 +600,29 @@ class Orderable a is
     end
 end
 
+let pick a
+    : (a -> a -> Bool) -> a -> a -> a
+    = fn f, x, y -> cond (f x y) x y end
+end
+
 let max (a : Orderable)
     : a -> a -> a
-    = fn a, b -> cond (gr a b) a b end
+    = pick gr
 end
 
 let min (a : Orderable)
     : a -> a -> a
-    = fn a, b -> cond (gr a b) b a end
+    = pick ls
 end
 
 let clamp (a : Orderable)
     : a -> a -> a -> a
-    = fn lo, hi, v -> max lo < min hi v end
+    = fn lo, hi -> max lo ~ min hi end
 end
 
 let abs (a : Orderable, Addable, Subable, Default)
     : a -> a
-    = fn x -> cond (ls x default) (sub default x) x end
+    = join < fork cond (gr default) neg
 end
 
 let neg (a : Subable, Default)
@@ -696,7 +638,6 @@ class Eqable a is
     let neq
         : a -> a -> Bool
     end
-
 end
 
 class Showable a is
@@ -945,6 +886,20 @@ instance Monad IO is
     end
 end
 
+# ---- linear IO: sequencing an action whose result must be used exactly once ----
+# The continuation's parameter is linear, so a lambda passed to `lbind` is checked for
+# exactly-once use of its argument (linear.rs), and `lreturn` is a legal consumer of one.
+
+let lreturn a
+    : (1 x : a) -> IO a
+    = return
+end
+
+let lbind a b
+    : ((1 x : a) -> IO b) -> IO a -> IO b
+    = bind
+end
+
 instance Default Int is let default : Int = 0 end end
 
 instance Default Float is let default : Float = 0.0 end end
@@ -1089,18 +1044,37 @@ let nat_to_int
     end
 end
 
+# ---- SNat helpers: computed dependent arguments (`f (snat_succ n)`) ----
+
+let snat_succ n
+    : SNat n -> SNat (Nat:Succ n)
+    = SNat:SS
+end
+
+let snat_add a b
+    : SNat a -> SNat b -> SNat (Add a b)
+    = match
+        SNat:SZ, m   -> m end
+        SNat:SS k, m -> SNat:SS (snat_add k m) end
+    end
+end
+
+let snat_to_int n
+    : SNat n -> Int
+    = match
+        SNat:SZ   -> 0 end
+        SNat:SS k -> succ (snat_to_int k) end
+    end
+end
+
 let int_to_nat
     : Int -> Nat
-    = match
-        n -> cond (lse n 0) Nat:Zero (Nat:Succ (int_to_nat (pred n))) end
-    end
+    = fn n -> cond (lse n 0) Nat:Zero (Nat:Succ (int_to_nat (pred n))) end
 end
 
 let float_digit
     : Int -> Float
-    = match
-        n -> cond (lse n 0) 0.0 (succ (float_digit (pred n))) end
-    end
+    = fn n -> cond (lse n 0) 0.0 (succ (float_digit (pred n))) end
 end
 
 # ---- Addable / Subable / Mulable / Divable ----
@@ -1401,7 +1375,7 @@ instance Orderable (List a) is
                 cond (eq x y) (gre xs ys) (gr x y)
             end
             [], List:Cons _ -> Bool:False end
-            _, _                  -> Bool:True end
+            _, _            -> Bool:True end
         end
     end
     let ls (a : Orderable, Eqable)
@@ -1768,7 +1742,7 @@ end
 
 let bit_not
     : Int -> Int
-    = flip bit_xor -1
+    = bit_xor -1
 end
 
 instance Successable Char is

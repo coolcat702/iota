@@ -32,6 +32,8 @@ struct Spec<'a> {
 	errors: Vec<Diagnostic>,
 	counter: usize,
 	span: Span,
+	/// concrete types of the locals in scope while an instance body is rewritten
+	var_tys: HashMap<Name, Ty>,
 }
 
 pub fn specialize(
@@ -58,6 +60,7 @@ pub fn specialize(
 		errors: Vec::new(),
 		counter: 0,
 		span: Span::synthetic(0),
+		var_tys: HashMap::new(),
 	};
 	let Some(f) = sp.funcs.get(entry).copied() else {
 		return Err(vec![Diagnostic::error(
@@ -92,7 +95,9 @@ impl<'a> Spec<'a> {
 	}
 
 	fn request(&mut self, name: &str, ty: &Ty) -> Name {
-		let ty = self.ti.norm(&default_vars(ty));
+		// indices are erased from layouts, so `vmap` at `Vec 3` and at an unknown length is
+		// one instance, not two
+		let ty = Self::erase_indices(&self.ti.norm(&default_vars(ty)));
 		let generic = match (self.funcs.get(name), self.externs.get(name)) {
 			(Some(f), _) => has_vars(&f.ty) || f.params.iter().any(|(_, t)| has_vars(t)),
 			(_, Some(e)) => has_vars(&e.ty),
@@ -131,6 +136,34 @@ impl<'a> Spec<'a> {
 		mangled
 	}
 
+	/// Replace every type-level number argument by `Unit` (what `lower.rs` does to layouts).
+	fn erase_indices(t: &Ty) -> Ty {
+		match t {
+			Ty::Fn(a, b) => Ty::Fn(
+				Box::new(Self::erase_indices(a)),
+				Box::new(Self::erase_indices(b)),
+			),
+			Ty::Product(a, b) => Ty::Product(
+				Box::new(Self::erase_indices(a)),
+				Box::new(Self::erase_indices(b)),
+			),
+			Ty::Sum(a, b) => Ty::Sum(
+				Box::new(Self::erase_indices(a)),
+				Box::new(Self::erase_indices(b)),
+			),
+			Ty::App(f, a) => {
+				let f = Self::erase_indices(f);
+				let a = if crate::types::is_index_ty(a) {
+					Ty::Unit
+				} else {
+					Self::erase_indices(a)
+				};
+				Ty::App(Box::new(f), Box::new(a))
+			}
+			other => other.clone(),
+		}
+	}
+
 	fn process(&mut self, job: Job) {
 		if let Some(f) = self.funcs.get(job.name.as_str()).copied() {
 			self.span = f.span;
@@ -166,6 +199,7 @@ impl<'a> Spec<'a> {
 			.map(|(n, t)| (n.clone(), self.concrete(t, &tsub)))
 			.collect();
 		let ret = self.concrete(&f.ret, &tsub);
+		self.var_tys = params.iter().cloned().collect();
 		let body = self.expr(&f.body, &tsub);
 		self.out_funcs.push(Function {
 			name: job.mangled.clone(),
@@ -262,11 +296,13 @@ impl<'a> Spec<'a> {
 			Value::Unwrap(a) => Value::Unwrap(self.atom(a, tsub)),
 			Value::Str(s) => Value::Str(s.clone()),
 			Value::Fail(m) => Value::Fail(m.clone()),
-			Value::Lambda(p, t, body) => Value::Lambda(
-				p.clone(),
-				self.concrete(t, tsub),
-				Box::new(self.expr(body, tsub)),
-			),
+			Value::Lambda(p, t, body) => {
+				let t = self.concrete(t, tsub);
+				let old = self.var_tys.insert(p.clone(), t.clone());
+				let body = Box::new(self.expr(body, tsub));
+				self.restore_var(p, old);
+				Value::Lambda(p.clone(), t, body)
+			}
 		}
 	}
 
@@ -275,19 +311,108 @@ impl<'a> Spec<'a> {
 			Expr::Let(x, t, v, rest) => {
 				let ty = self.concrete(t, tsub);
 				let nv = self.value(v, tsub);
-				Expr::Let(x.clone(), ty, nv, Box::new(self.expr(rest, tsub)))
+				let old = self.var_tys.insert(x.clone(), ty.clone());
+				let rest = Box::new(self.expr(rest, tsub));
+				self.restore_var(x, old);
+				Expr::Let(x.clone(), ty, nv, rest)
 			}
 			Expr::Halt(a) => Expr::Halt(self.atom(a, tsub)),
-			Expr::Case(a, arms) => Expr::Case(
-				self.atom(a, tsub),
-				arms.iter()
-					.map(|arm| Arm {
-						pat: arm.pat.clone(),
-						body: self.expr(&arm.body, tsub),
-					})
-					.collect(),
-			),
+			Expr::Case(a, arms) => {
+				// an arm whose constructor cannot produce the scrutinee's (now concrete)
+				// type is dropped here; a GADT match is written once but instantiated at
+				// several types, and the arms for the other types do not typecheck
+				let scrut_ty = match a {
+					Atom::Var(v) => self.var_tys.get(v).cloned(),
+					_ => None,
+				};
+				let live: Vec<&Arm> = match &scrut_ty {
+					Some(st) => arms
+						.iter()
+						.filter(|arm| self.arm_possible(st, &arm.pat))
+						.collect(),
+					None => arms.iter().collect(),
+				};
+				// every arm impossible: keep them all rather than produce an empty case
+				let live = if live.is_empty() {
+					arms.iter().collect()
+				} else {
+					live
+				};
+				Expr::Case(
+					self.atom(a, tsub),
+					live.into_iter()
+						.map(|arm| Arm {
+							pat: arm.pat.clone(),
+							body: self.expr(&arm.body, tsub),
+						})
+						.collect(),
+				)
+			}
 		}
+	}
+
+	fn restore_var(&mut self, x: &str, old: Option<Ty>) {
+		match old {
+			Some(t) => {
+				self.var_tys.insert(x.to_string(), t);
+			}
+			None => {
+				self.var_tys.remove(x);
+			}
+		}
+	}
+
+	/// Can a value of type `scrut` have been built by constructor `pat`? Only claims
+	/// "no" when a constructor's result argument and the scrutinee's are both ground and
+	/// different (`Expr Bool` against `Expr Int`).
+	fn arm_possible(&self, scrut: &Ty, pat: &CasePat) -> bool {
+		let CasePat::Ctor(canon) = pat else {
+			return true;
+		};
+		let Some(sch) = self.ti.ctor_scheme.get(canon) else {
+			return true;
+		};
+		let res = match &sch.ty {
+			Ty::Fn(_, r) => &**r,
+			r => r,
+		};
+		let st = self.ti.norm(scrut);
+
+		// VERY IMPORTANT otherwise gadts can generate bad MIR
+		// fuck that bug
+		// like seriously i spent like 2 days finding this
+		let res = &self.ti.norm(res);
+		// seriously, fuck that
+		let (rh, rargs) = crate::types::spine(res);
+		let (sh, sargs) = crate::types::spine(&st);
+		if rh != sh || rargs.len() != sargs.len() {
+			return true;
+		}
+		!rargs
+			.iter()
+			.zip(sargs.iter())
+			.any(|(r, a)| Self::ground_apart(r, a))
+	}
+
+	fn ground_apart(a: &Ty, b: &Ty) -> bool {
+		fn simple(t: &Ty) -> bool {
+			match t {
+				Ty::Unit | Ty::Int | Ty::Float | Ty::Char | Ty::Named(_) | Ty::Lit(_) => true,
+				Ty::Fn(a, b) | Ty::Product(a, b) | Ty::Sum(a, b) => simple(a) && simple(b),
+				Ty::App(f, a) => {
+					!crate::typechecker::is_arith(t)
+						&& !crate::tyfun::is_fn_app(t)
+						&& simple(f) && simple(a)
+				}
+				_ => false,
+			}
+		}
+		// type-level numbers are erased indices: an instance's index is not reliable here
+		// (a recursive call's index is unknown and defaults), so never prune on one
+		if crate::types::is_index_ty(a) || crate::types::is_index_ty(b) {
+			return false;
+		}
+		simple(a) && simple(b) && display_ty(a) != display_ty(b)
 	}
 
 	fn sum_ty(tys: &[Ty]) -> Ty {

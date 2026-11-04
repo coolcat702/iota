@@ -7,5 +7,5 @@ end
 
 let main
     : IO Unit
-    = println < show < factorial 10
+    = println < factorial 10
 end

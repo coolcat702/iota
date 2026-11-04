@@ -175,6 +175,14 @@ end
 
 # ---- the trie ----
 
+let maybe_map a b
+    : (a -> b) -> Maybe a -> Maybe b
+    = fn f -> match
+        Maybe:Nil   -> Maybe:Nil end
+        Maybe:Val x -> Maybe:Val (f x) end
+    end end
+end
+
 let maybe_fold a b
     : b -> (a -> b) -> Maybe a -> b
     = match

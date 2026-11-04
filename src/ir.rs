@@ -167,6 +167,7 @@ pub fn display_ty(ty: &Ty) -> String {
 		Ty::Char => "Char".to_string(),
 		Ty::Var(n) => format!("t{}", n),
 		Ty::Named(n) => n.clone(),
+		Ty::Lit(n) => n.to_string(),
 		Ty::App(f, a) => format!("({} {})", display_ty(f), display_ty(a)),
 		Ty::Fn(a, b) => format!("({} -> {})", display_ty(a), display_ty(b)),
 		Ty::Product(a, b) => format!("({} * {})", display_ty(a), display_ty(b)),
@@ -210,6 +211,14 @@ pub fn match_ty(generic: &Ty, concrete: &Ty, out: &mut HashMap<u32, Ty>) {
 /// the class parameter (`Monad`'s `bind` is generic in `a` and `b` too, so even
 /// `IO:bind` is never literally equal to a use-site type).
 fn structurally_compatible(candidate: &Ty, occurrence: &Ty) -> bool {
+	// type-level numbers and functions are erased indices: `Vec (Succ n) a` (a signature) is
+	// compatible with `Vec 2 Int` (a use), whatever the index expression looks like
+	let index_like = |t: &Ty| {
+		matches!(t, Ty::Lit(_)) || crate::typechecker::is_arith(t) || crate::tyfun::is_fn_app(t)
+	};
+	if !matches!(candidate, Ty::Var(_)) && (index_like(candidate) || index_like(occurrence)) {
+		return true;
+	}
 	match (candidate, occurrence) {
 		(Ty::Var(_), _) => true,
 		(Ty::Unit, Ty::Unit)
@@ -217,6 +226,7 @@ fn structurally_compatible(candidate: &Ty, occurrence: &Ty) -> bool {
 		| (Ty::Float, Ty::Float)
 		| (Ty::Char, Ty::Char) => true,
 		(Ty::Named(n1), Ty::Named(n2)) => n1 == n2,
+		(Ty::Lit(n1), Ty::Lit(n2)) => n1 == n2,
 		(Ty::Fn(a1, b1), Ty::Fn(a2, b2))
 		| (Ty::Product(a1, b1), Ty::Product(a2, b2))
 		| (Ty::Sum(a1, b1), Ty::Sum(a2, b2)) => {
@@ -521,6 +531,12 @@ impl<'l> Lowerer<'l> {
 		let joined = path.join(":");
 		if self.canonical.contains(&joined) {
 			return Atom::Global(joined, occurrence_ty.clone());
+		}
+		if let Some(target) = crate::types::alias_target(&joined) {
+			let t: Vec<String> = target.split(':').map(str::to_string).collect();
+			if t != path {
+				return self.resolve_global(&t, occurrence_ty);
+			}
 		}
 		let bare = path.last().cloned().unwrap_or_else(|| joined.clone());
 		// A class method is resolved by the specializer, when its type is concrete.

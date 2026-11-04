@@ -160,6 +160,11 @@ let partition_point
       end
 end
 
+let nth_or a
+    : Int -> a -> List a -> a
+    = fn i, d, xs -> or_else d (idx xs i) end
+end
+
 let idx a
     : List a -> Int -> Maybe a
     = fn xs -> 

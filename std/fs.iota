@@ -9,6 +9,7 @@ module Fs is
 # Paths are plain strings; see the Path module for taking them apart and joining them.
 
 import file std/str.iota
+import file std/search.iota
 import file std/path.iota
 import file std/sort.iota
 
@@ -100,27 +101,13 @@ end
 # The size of a file in bytes (clamped to the largest Int).
 let file_size
     : String -> IO (Either IOError Int)
-    = (map < either_map < float_to_int ~ nth_or 1 0.0) ~ stat_fields
+    = (map < either_map < float_to_int ~ Search:nth_or 1 0.0) ~ stat_fields
 end
 
 # The last modification time, in seconds since 1970.
 let modified_time
     : String -> IO (Either IOError Float)
-    = map < either_map < nth_or 2 0.0 ~ stat_fields
-end
-
-let nth_or a
-    : Int -> a -> List a -> a
-    = fn i, d, xs -> or_else d (idx_opt i xs) end
-end
-
-let idx_opt a
-    : Int -> List a -> Maybe a
-    = match
-        _, []                 -> Maybe:Nil end
-        0, List:Cons (x * _)  -> Maybe:Val x end
-        i, List:Cons (_ * xs) -> idx_opt (sub i 1) xs end
-    end
+    = map < either_map < Search:nth_or 2 0.0 ~ stat_fields
 end
 
 # ---- whole files as lines ----

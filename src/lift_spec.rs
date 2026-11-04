@@ -375,12 +375,12 @@ fn spec_block(e: Expr, outer: &Paps, sp: &mut Spec) -> Expr {
 				};
 				args.push(a.clone());
 				match sp.arity.get(&g).copied() {
-					// still a pap: remember it
+					// still a pap, remember it
 					Some(n) if args.len() < n => {
 						paps.insert(x.clone(), (g, args));
 						out.push((x, ty, Value::App(f, a)));
 					}
-					// saturated call: specialize if a static function argument is known
+					// saturated call, spec if a static arg is known
 					Some(n) if args.len() == n => match sp.try_specialize(&g, &args, &paps) {
 						Some((spec_name, new_args)) => {
 							sp.changed = true;

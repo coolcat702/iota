@@ -1,0 +1,316 @@
+module Main is
+
+# a form using GADTs to make bad responses impossible
+
+import file std/ansi.iota
+import file std/str.iota
+import file std/search.iota
+
+type Field a =
+    TextF (String * Int)           : Field String # label, min chars
+  + IntF (String * Int * Int)      : Field Int    # label, min, max
+  + YesNoF String                  : Field Bool   # label
+  + ChoiceF (String * List String) : Field String # label, choices
+end
+
+# how to ask, how to show an answer
+type Form a = Mk (IO a * (a -> List String))
+end
+
+let asker a
+    : Form a -> IO a
+    = match
+        Form:Mk (go * _) -> go end
+    end
+end
+
+let shower a
+    : Form a -> a -> List String
+    = match
+        Form:Mk (_ * show_it) -> show_it end
+    end
+end
+
+let leaf a
+    : Field a -> Form a
+    = fn f -> Form:Mk (ask_field f * (fn v -> [describe f v] end)) end
+end
+
+# the answer to `both l r` is the answer to `l` and the answer to `r`
+let both a b
+    : Form a -> Form b -> Form (a * b)
+    = fn l, r ->
+        Form:Mk (
+            (asker l > bind (fn x -> asker r > bind (return ~ pair x) end)) *
+            (fork append (shower l ~ fst) (shower r ~ rst))
+        )
+    end
+end
+
+let text
+    : String -> Int -> Form String
+    = fn label, at_least -> leaf < Field:TextF (label * at_least) end
+end
+
+let int_in
+    : String -> Int -> Int -> Form Int
+    = fn label, lo, hi -> leaf < Field:IntF (label * lo * hi) end
+end
+
+let yes_no
+    : String -> Form Bool
+    = leaf ~ Field:YesNoF
+end
+
+let choice
+    : String -> List String -> Form String
+    = fn label, options -> leaf (Field:ChoiceF (label * options)) end
+end
+
+# name, age, newsletter, plan, favourite colour
+let signup
+    : Form (String * Int * Bool * String * String)
+    = both (text "Name" 1)
+    < both (int_in "Age" 0 120)
+    < both (yes_no "Subscribe to the newsletter?")
+    < both (choice "Plan" ["free", "pro", "team"])
+    < text "Favourite colour (optional)" 0
+end
+
+let confirm
+    : Form Bool
+    = yes_no "Submit these answers?"
+end
+
+let print_all
+    : List String -> IO Unit
+    = match
+        []                   -> return unit end
+        List:Cons (l * rest) -> putstrln l > then (print_all rest) end
+    end
+end
+
+# "? Label (hint) › "
+let question
+    : String -> String -> String
+    = fn label, hint ->
+        flatten [Ansi:green "? ", Ansi:bold label, " ", Ansi:dim hint, " ", Ansi:cyan "› "]
+    end
+end
+
+let complain
+    : String -> IO Unit
+    = fn why -> putstrln (Ansi:red (append "  ✗ " why)) end
+end
+
+# the input has run out: there is nobody left to ask
+let bye
+    : IO String
+    = putstrln "" > then
+    < putstrln (Ansi:dim "Input closed, giving up.") > then
+    < exit 1 > then
+    < return ""
+end
+
+let got_line
+    : Maybe String -> IO String
+    = match
+        Maybe:Val s -> return s end
+        Maybe:Nil   -> bye end
+    end
+end
+
+# shows the prompt and reads one line
+let read_answer
+    : String -> IO String
+    = fn prompt ->
+        putstr prompt > then
+        flush > then
+        read_line > bind got_line
+    end
+end
+
+let ask_until a
+    : String -> (String -> Either String a) -> IO a
+    = fn prompt, question ->
+        read_answer prompt > bind (fn raw ->
+            match
+                Either:Right v  -> return v end
+                Either:Left why -> complain why > then (ask_until prompt question) end
+            end (question (Str:trim raw))
+        end)
+    end
+end
+
+# ---- checking an answer
+
+let parse_text
+    : Int -> String -> Either String String
+    = fn at_least, s ->
+        cond (lse at_least (len s))
+            (Either:Right s)
+            (Either:Left (flatten ["please enter at least ", show at_least, " character(s)"]))
+    end
+end
+
+let in_range
+    : Int -> Int -> Maybe Int -> Either String Int
+    = fn lo, hi -> match
+        Maybe:Nil   -> Either:Left "that is not a whole number" end
+        Maybe:Val n ->
+            cond (and (lse lo n) (lse n hi))
+                (Either:Right n)
+                (Either:Left (flatten ["pick a number from ", show lo, " to ", show hi]))
+        end
+    end end
+end
+
+let parse_int_in
+    : Int -> Int -> String -> Either String Int
+    = fn lo, hi -> in_range lo hi ~ parse end
+end
+
+let yes_no_of
+    : String -> Either String Bool
+    = fn s ->
+        cond (or (eq s "y") (eq s "yes")) (Either:Right Bool:True)
+      < cond (or (eq s "n") (eq s "no")) (Either:Right Bool:False)
+      < Either:Left "please answer yes or no"
+    end
+end
+
+let parse_yes_no
+    : String -> Either String Bool
+    = yes_no_of ~ Str:to_lower
+end
+
+let pick_option
+    : List String -> Maybe Int -> Either String String
+    = fn options -> match
+        Maybe:Nil   -> Either:Left "type the number of your choice" end
+        Maybe:Val n ->
+            cond (and (lse 1 n) (lse n (len options)))
+                (Either:Right (Search:nth_or (pred n) "" options))
+                (Either:Left (flatten ["pick a number from 1 to ", show (len options)]))
+        end
+    end end
+end
+
+let parse_choice
+    : List String -> String -> Either String String
+    = fn options, s -> pick_option options (parse s) end
+end
+
+let list_options
+    : Int -> List String -> IO Unit
+    = fn i -> match
+        []                      -> return unit end
+        List:Cons (o * rest)    ->
+            putstrln (flatten ["  ", Ansi:cyan (show i), ") ", o]) > then
+            (list_options (succ i) rest)
+        end
+    end end
+end
+
+# ======================================================================================
+# Interpreters over a field
+# ======================================================================================
+
+# Asks one question. Each branch returns exactly the type its constructor promises: in the
+# `IntF` branch the checker knows `a` is `Int`, so `ask_until` there has to give an `IO Int`.
+let ask_field a
+    : Field a -> IO a
+    = match
+        Field:TextF (label * at_least) ->
+            ask_until (question label "") (parse_text at_least)
+        end
+        Field:IntF (label * lo * hi) ->
+            ask_until
+                (question label (flatten ["(", show lo, "-", show hi, ")"]))
+                (parse_int_in lo hi)
+        end
+        Field:YesNoF label ->
+            ask_until (question label "(y/n)") parse_yes_no
+        end
+        Field:ChoiceF (label * options) ->
+            list_options 1 options > then
+          < ask_until (question label "(number)") (parse_choice options)
+        end
+    end
+end
+
+# an answer as "Label    value", one line per field
+let row
+    : String -> String -> String
+    = fn label, value -> flatten ["  ", Str:pad_right 30 ' ' label, Ansi:bold value] end
+end
+
+let describe a
+    : Field a -> a -> String
+    = match
+        Field:TextF (label * _), v          -> row label v end
+        Field:IntF (label * _), v           -> row label (show v) end
+        Field:YesNoF label, v               -> row label (cond v "yes" "no") end
+        Field:ChoiceF (label * _), v        -> row label v end
+    end
+end
+
+# ======================================================================================
+# The program
+# ======================================================================================
+
+let greeting
+    : (String * Int * Bool * String * String) -> String
+    = match
+        (name * age * news * plan * colour) ->
+            flatten [
+                "Welcome, ", name, "! You are ", show age, " and on the ", plan, " plan",
+                cond news ", with the newsletter" "",
+                ".",
+                cond (Str:is_empty colour) "" (flatten [" ", colour, " is a fine colour."])
+            ]
+        end
+    end
+end
+
+let review
+    : (String * Int * Bool * String * String) -> IO Unit
+    = fn answers ->
+        putstrln "" > then
+      < putstrln (Ansi:bold "Your answers") > then
+      < print_all (shower signup answers)
+    end
+end
+
+let finish
+    : (String * Int * Bool * String * String) -> IO Unit
+    = fn answers ->
+        putstrln "" > then
+      < putstrln (Ansi:green (greeting answers))
+    end
+end
+
+# ask, show, confirm; if the answers are not confirmed, start over
+let session
+    : IO Unit
+    = asker signup > bind (fn answers ->
+        review answers > then
+      < putstrln "" > then
+      < asker confirm > bind (fn ok -> cond ok
+            (finish answers)
+            (putstrln "" > then session)
+        end)
+    end)
+end
+
+let banner
+    : IO Unit
+    = putstrln (Ansi:bold (Ansi:cyan "Sign up")) > then
+    < putstrln (Ansi:dim "Answer each question and press Enter. Ctrl-D quits.") > then
+    < putstrln ""
+end
+
+let main
+    : IO Unit
+    = banner > then session
+end

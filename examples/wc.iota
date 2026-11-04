@@ -10,7 +10,7 @@ import file std/str.iota
 
 let counts
     : String -> String
-    = fn text -> Str:join " " (map (fn n -> Str:pad_left 7 ' ' (show n) end) [len (Str:lines text), len (Str:words text), len text]) end
+    = fn text -> Str:join " " (map (Str:pad_left 7 ' ' ~ show) [len (Str:lines text), len (Str:words text), len text]) end
 end
 
 # prints one result line; the Int is the number of failures (0 or 1)
@@ -36,5 +36,5 @@ let main
     = fn argv -> cond (eq (len argv) 0)
         (bind (fn text -> println (counts text) > then (return 0) end) read_stdin)
         (bind (fn failed -> return (cond (gr failed 0) 1 0) end) (add_failures argv 0))
-      end
+    end
 end

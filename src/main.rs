@@ -20,15 +20,23 @@ use std::{
 use ariadne::{Color, Config, Label, Report, ReportKind};
 use clap::{Parser, ValueEnum};
 
+mod arith;
 mod backend;
+mod consteval;
 mod diag;
 mod ir;
+mod kind;
+mod kindcheck;
 mod lang;
 mod lift_spec;
+mod linear;
 mod optimize;
 mod parser;
 mod rtprims;
 mod spec;
+mod totality;
+mod tyfun;
+mod tynorm;
 mod typechecker;
 mod types;
 mod ui;
@@ -151,7 +159,7 @@ struct Cli {
 	/// known functions, whole-program, within a bounded effort budget — worth it
 	/// under lazy evaluation, where it turns calls like `cond` into plain branches
 	/// and removes the thunks their arguments would become
-	#[arg(long, value_enum, default_value_t = optimize::OptimizeMode::Aggressive)]
+	#[arg(long, value_enum, default_value_t = optimize::OptimizeMode::Standard)]
 	opt_mode: optimize::OptimizeMode,
 
 	/// With `--emit ir`: also print the IR before optimization
@@ -161,6 +169,10 @@ struct Cli {
 	/// Entry point; defaults to the manifest's `entry` (`Main:main`)
 	#[arg(long)]
 	entry: Option<String>,
+
+	/// Reductions allowed per type-level function application before giving up
+	#[arg(long, value_name = "N", default_value_t = 10_000)]
+	type_fuel: u64,
 
 	/// Use this prelude instead of the one built into the compiler
 	#[arg(long, value_name = "FILE")]
@@ -318,11 +330,15 @@ impl<'r, 'd> Loader<'r, 'd> {
 			.map(Path::to_path_buf)
 			.unwrap_or_else(|| PathBuf::from("."));
 		for (import_name, span) in imports {
+			// `std/...` is the embedded library, always use that copy. Otherwise a program next
+			// to a `std/` directory would load `std/str.iota` from disk for itself, while the
+			// embedded `std/ansi.iota` loads the embedded one, and `Str` would exist twice
+			if std_source(&import_name).is_some() {
+				self.load_embedded(&import_name, Some(span));
+				continue;
+			}
 			match resolve_import(&dir, &import_name) {
 				Some(found) => self.load(&found, Some(span)),
-				None if std_source(&import_name).is_some() => {
-					self.load_embedded(&import_name, Some(span))
-				}
 				None => {
 					self.diag.error(
 						format!("import '{}' not found (searched in '{}')", import_name, dir.display()),
@@ -353,6 +369,8 @@ fn collect_file_imports(program: &Program) -> Vec<(String, Span)> {
 		match &item.item {
 			TopLevel::Module(_, body) => body.iter().for_each(|c| go(c, out)),
 			TopLevel::ImportFile(name) => out.push((name.clone(), item.span)),
+			// `import unqualified path` loads the file like `import file path`
+			TopLevel::ImportUnqualified(q) => out.push((q.0.join(":"), item.span)),
 			_ => {}
 		}
 	}
@@ -688,6 +706,7 @@ fn wrap_entry_args(program: &mut ir::IrProgram, entry: &str, lang: &Lang) -> Opt
 }
 
 fn compile(cli: &Cli, diag: &mut Diag) -> i32 {
+	tyfun::set_fuel(cli.type_fuel);
 	if !cli.file.exists() {
 		diag.error(
 			format!("file '{}' not found", cli.file.display()),

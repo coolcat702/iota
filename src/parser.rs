@@ -191,8 +191,13 @@ enum Token {
     })]
 	StringLit(String),
 
-	#[regex(r"[-+]?[0-9]+", |lex| lex.slice().parse::<i32>().unwrap())]
+	#[regex(r"[-+]?[0-9]+", |lex| lex.slice().parse::<i32>().map_err(|_| ()))]
 	IntLit(i32),
+
+	// An unsigned literal too long for the common case. Value positions accept it only if
+	// it fits an i32; type positions read it as u64
+	#[regex(r"[0-9]{10,}", priority = 3)]
+	WideLit,
 
 	#[regex(r"[-+]?[0-9]*(?:\.[0-9]+)", |lex| lex.slice().parse::<f64>().unwrap())]
 	FloatLit(f64),
@@ -256,6 +261,7 @@ impl fmt::Display for Token {
 			Token::Underscore => write!(f, "Symbol '_'"),
 			Token::StringLit(s) => write!(f, "String Literal \"{}\"", s),
 			Token::IntLit(n) => write!(f, "Integer Literal {}", n),
+			Token::WideLit => write!(f, "Integer Literal"),
 			Token::FloatLit(x) => write!(f, "Float Literal {}", x),
 			Token::CharLit(c) => write!(f, "Character Literal {}", c),
 			Token::Nil => write!(f, "Nil"),
@@ -327,7 +333,12 @@ pub enum TopLevel {
 	Import(Qualified),
 	Export(Qualified),
 	Binding(Binding),
-	TypeDef(Spanned<Qualified>, Vec<Spanned<String>>, Spanned<Type>),
+	TypeDef(
+		Spanned<Qualified>,
+		Vec<Spanned<String>>,
+		Spanned<Type>,
+		TypeHeader,
+	),
 	ClassDef(Spanned<String>, Vec<Spanned<String>>, Vec<Spanned<Binding>>),
 	Instance(Spanned<String>, Vec<Spanned<Type>>, Vec<Spanned<Binding>>),
 }
@@ -366,6 +377,37 @@ pub struct Binding {
 pub struct Constraint {
 	pub type_var: Spanned<String>,
 	pub class_names: Vec<Spanned<String>>,
+	/// `(0 n : Nat)`: the quantity prefix of a binder. `Omega` when omitted.
+	pub quantity: Quantity,
+	/// `(f : Type -> Type)`: a kind written out in full. A bare `(n : Nat)` is stored in
+	/// `class_names`, because the parser cannot tell a class from a promoted data type; the
+	/// kind checker decides
+	pub kind: Option<KindAst>,
+}
+
+/// How many times a binder may be used at run time. `One` is reserved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum Quantity {
+	Zero,
+	One,
+	Omega,
+}
+
+/// A kind as written in source: `Type`, a promoted data type, or `K1 -> K2`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum KindAst {
+	Type,
+	Data(String),
+	Arrow(Box<KindAst>, Box<KindAst>),
+}
+
+/// The parts of a `type` declaration header that the old grammar had no room for:
+/// `type Vec (n : Nat) a : Type = ...`. Parallel to the declaration's parameter list.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct TypeHeader {
+	pub param_kinds: Vec<Option<KindAst>>,
+	pub param_quantities: Vec<Quantity>,
+	pub result_kind: Option<KindAst>,
 }
 
 #[allow(unused)]
@@ -401,6 +443,18 @@ pub enum Type {
 	Sum(Box<Spanned<Type>>, Box<Spanned<Type>>),
 	Product(Box<Spanned<Type>>, Box<Spanned<Type>>),
 	App(Box<Spanned<Type>>, Box<Spanned<Type>>),
+	/// An unsigned type-level number, `Vec 3 a`.
+	Lit(u64),
+	/// `_` in a type-level `match` pattern.
+	Hole,
+	/// `(q x : A) -> B`: dependent function.
+	Pi(Quantity, String, Box<Spanned<Type>>, Box<Spanned<Type>>),
+	/// `(q x : A) * B`: dependent pair.
+	Sigma(Quantity, String, Box<Spanned<Type>>, Box<Spanned<Type>>),
+	/// A constructor with an explicit result type: `IntLit Int : Expr Int`.
+	Annot(Box<Spanned<Type>>, Box<Spanned<Type>>),
+	/// The clauses of a type-level function: `match p1, p2 -> rhs end ... end`.
+	Match(Vec<(Vec<Spanned<Type>>, Spanned<Type>)>),
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -863,6 +917,8 @@ impl Parser {
 						span,
 					},
 					class_names: Vec::new(),
+					quantity: Quantity::Omega,
+					kind: None,
 				},
 				span,
 			});
@@ -870,6 +926,18 @@ impl Parser {
 
 		let span_begin = self.pos;
 		self.eat(registry, &Token::LParen)?;
+
+		// `(0 n : Nat)`: optional quantity prefix
+		let quantity_span = self.span_at_pos();
+		let quantity = self.parse_quantity_prefix();
+		if quantity == Quantity::One {
+			self.error(
+				registry,
+				"linear binders are not supported yet",
+				quantity_span,
+			);
+			return None;
+		}
 
 		let var_tok = self.peek()?;
 		let Spanned {
@@ -895,12 +963,32 @@ impl Parser {
 						span: tok_span,
 					},
 					class_names: Vec::new(),
+					quantity,
+					kind: None,
 				},
 				span: Span::new(self.source_id, span_begin, self.pos),
 			});
 		}
 
 		self.eat(registry, &Token::Colon)?;
+
+		// `(f : Type -> Type)`, `(f : (Type -> Type) -> Type)`, `(a : Type)`: a kind
+		if self.starts_explicit_kind() {
+			let kind = self.parse_kind(registry)?;
+			self.eat(registry, &Token::RParen)?;
+			return Some(Spanned {
+				item: Constraint {
+					type_var: Spanned {
+						item: type_var,
+						span: tok_span,
+					},
+					class_names: Vec::new(),
+					quantity,
+					kind: Some(kind),
+				},
+				span: Span::new(self.source_id, span_begin, self.pos),
+			});
+		}
 
 		let first = self.parse_ident(registry)?;
 		let mut class_names = vec![first];
@@ -921,9 +1009,84 @@ impl Parser {
 					span: tok_span,
 				},
 				class_names,
+				quantity,
+				kind: None,
 			},
 			span: Span::new(self.source_id, span_begin, self.pos),
 		})
+	}
+
+	// the source text of the token at `offset`
+	fn text_at(&self, offset: usize) -> &str {
+		match self.peek_at(offset) {
+			Some(t) => self.src.get(t.span.start..t.span.end).unwrap_or(""),
+			None => "",
+		}
+	}
+
+	// `0` or `1` written exactly like that (not `+1`, `-0`, `01`)
+	fn is_quantity_literal(&self, offset: usize) -> bool {
+		matches!(
+			self.peek_at(offset).map(|t| &t.item),
+			Some(Token::IntLit(_))
+		) && matches!(self.text_at(offset), "0" | "1")
+	}
+
+	// consumes `0` / `1` when it is a quantity prefix; `Omega` when there is none
+	fn parse_quantity_prefix(&mut self) -> Quantity {
+		if self.is_quantity_literal(0) {
+			let q = if self.text_at(0) == "0" {
+				Quantity::Zero
+			} else {
+				Quantity::One
+			};
+			self.skip();
+			q
+		} else {
+			Quantity::Omega
+		}
+	}
+
+	// does the token stream after a binder's `:` look like a kind that is not just a class
+	// name? (`Type`, `K -> K`, `( ... )`). A lone `Nat` / `Eqable` stays a class_names entry.
+	fn starts_explicit_kind(&self) -> bool {
+		match self.peek().map(|t| &t.item) {
+			Some(Token::LParen) => true,
+			Some(Token::Ident(n)) => n == "Type" || self.nth_is(1, &Token::Arrow),
+			_ => false,
+		}
+	}
+
+	// kind ::= atom ('->' kind)?      atom ::= 'Type' | DataName | '(' kind ')'
+	fn parse_kind(&mut self, registry: &mut SourceRegistry) -> Option<KindAst> {
+		let tok = self.peek()?.clone();
+		let left = match tok.item {
+			Token::Ident(n) => {
+				self.skip();
+				if n == "Type" {
+					KindAst::Type
+				} else {
+					KindAst::Data(n)
+				}
+			}
+			Token::LParen => {
+				self.skip();
+				let k = self.parse_kind(registry)?;
+				self.eat(registry, &Token::RParen)?;
+				k
+			}
+			_ => {
+				self.error(registry, "Expected a kind", tok.span);
+				return None;
+			}
+		};
+		if self.next_is(&Token::Arrow) {
+			self.skip();
+			let right = self.parse_kind(registry)?;
+			Some(KindAst::Arrow(Box::new(left), Box::new(right)))
+		} else {
+			Some(left)
+		}
 	}
 
 	fn parse_app(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Expr>> {
@@ -935,6 +1098,7 @@ impl Parser {
 			Some(
 				Token::Ident(_)
 					| Token::IntLit(_)
+					| Token::WideLit
 					| Token::FloatLit(_)
 					| Token::StringLit(_)
 					| Token::CharLit(_)
@@ -960,6 +1124,7 @@ impl Parser {
 			Some(
 				Token::Ident(_)
 					| Token::IntLit(_)
+					| Token::WideLit
 					| Token::FloatLit(_)
 					| Token::StringLit(_)
 					| Token::CharLit(_)
@@ -1134,7 +1299,7 @@ impl Parser {
 		match &tok.item {
 			Token::Ident(_) => self.parse_ident_atom(registry),
 
-			Token::IntLit(_) | Token::FloatLit(_) | Token::CharLit(_) => {
+			Token::IntLit(_) | Token::WideLit | Token::FloatLit(_) | Token::CharLit(_) => {
 				let Spanned { item: lit, span } = self.parse_literal()?;
 				Some(Spanned {
 					item: Expr::Literal(lit),
@@ -1189,6 +1354,21 @@ impl Parser {
 			Token::IntLit(n) => {
 				self.skip();
 				Literal::Int(*n)
+			}
+			Token::WideLit => {
+				let text = self.text_at(0).to_string();
+				self.skip();
+				match text.parse::<i32>() {
+					Ok(n) => Literal::Int(n),
+					Err(_) => {
+						self.failed = true;
+						self.diags.push(Diagnostic::error(
+							format!("integer literal {} does not fit in 32 bits", text),
+							Some(span),
+						));
+						Literal::Int(0)
+					}
+				}
 			}
 			Token::FloatLit(x) => {
 				self.skip();
@@ -1436,6 +1616,23 @@ impl Parser {
 				item: Pattern::Literal(Literal::Int(n)),
 				span,
 			}),
+			Token::WideLit => {
+				let text = self.src.get(span.start..span.end).unwrap_or("").to_string();
+				match text.parse::<i32>() {
+					Ok(n) => Some(Spanned {
+						item: Pattern::Literal(Literal::Int(n)),
+						span,
+					}),
+					Err(_) => {
+						self.error(
+							registry,
+							&format!("integer literal {} does not fit in 32 bits", text),
+							span,
+						);
+						None
+					}
+				}
+			}
 			Token::FloatLit(x) => Some(Spanned {
 				item: Pattern::Literal(Literal::Float(x)),
 				span,
@@ -1557,6 +1754,16 @@ impl Parser {
 			};
 		}
 
+		// GADT constructor result: `IntLit Int : Expr Int`
+		if self.next_is(&Token::Colon) {
+			self.eat(registry, &Token::Colon)?;
+			let result = self.parse_type_func(registry)?;
+			typ = Spanned {
+				span: Span::new(self.source_id, typ.span.start, result.span.end),
+				item: Type::Annot(Box::new(typ), Box::new(result)),
+			};
+		}
+
 		while self
 			.peek()
 			.map(|t| &t.item == &Token::Plus)
@@ -1573,8 +1780,77 @@ impl Parser {
 		Some(typ)
 	}
 
+	// `(x : A)` or `(0 x : A)` at the cursor: a dependent binder, not a parenthesised type
+	fn dep_binder_ahead(&self) -> bool {
+		if !self.next_is(&Token::LParen) {
+			return false;
+		}
+		let o = if self.is_quantity_literal(1) { 2 } else { 1 };
+		if !matches!(self.peek_at(o).map(|t| &t.item), Some(Token::Ident(_)))
+			|| !self.nth_is(o + 1, &Token::Colon)
+		{
+			return false;
+		}
+		// `(Nat:Succ n)`: a qualified name, written without spaces around the colon
+		let (Some(id), Some(colon)) = (self.peek_at(o), self.peek_at(o + 1)) else {
+			return false;
+		};
+		let glued_left = colon.span.start == id.span.end;
+		let glued_right = self
+			.peek_at(o + 2)
+			.is_some_and(|n| matches!(n.item, Token::Ident(_)) && n.span.start == colon.span.end);
+		!(glued_left && glued_right)
+	}
+
+	// `(q x : A) -> B` (pi) or `(q x : A) * B` (sigma)
+	fn parse_dep_type(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Type>> {
+		let start = self.eat(registry, &Token::LParen)?.start;
+		let quantity_span = self.span_at_pos();
+		let quantity = self.parse_quantity_prefix();
+		let name = self.parse_ident(registry)?;
+		self.eat(registry, &Token::Colon)?;
+		let dom = self.parse_type(registry)?;
+		self.eat(registry, &Token::RParen)?;
+		let is_pi = if self.next_is(&Token::Arrow) {
+			true
+		} else if self.next_is(&Token::Star) {
+			false
+		} else {
+			let span = self.span_at_pos();
+			self.error(
+				registry,
+				"Expected `->` or `*` after a dependent binder `(x : A)`",
+				span,
+			);
+			return None;
+		};
+		if quantity == Quantity::One && !is_pi {
+			self.error(
+				registry,
+				"a linear dependent pair is not supported yet",
+				quantity_span,
+			);
+			return None;
+		}
+		self.skip();
+		let cod = self.parse_type(registry)?;
+		let span = Span::new(self.source_id, start, cod.span.end);
+		let (d, c) = (Box::new(dom), Box::new(cod));
+		Some(Spanned {
+			item: if is_pi {
+				Type::Pi(quantity, name.item, d, c)
+			} else {
+				Type::Sigma(quantity, name.item, d, c)
+			},
+			span,
+		})
+	}
+
 	fn parse_type_func(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Type>> {
 		self.debug_print("parse type func");
+		if self.dep_binder_ahead() {
+			return self.parse_dep_type(registry);
+		}
 		let mut typ = self.parse_type_app(registry)?;
 
 		while self
@@ -1592,13 +1868,27 @@ impl Parser {
 		Some(typ)
 	}
 
+	// an unsigned literal can start a type argument, a signed one (`+3`) can't: it is
+	// the next summand of a sum type, or an error
+	fn unsigned_literal_ahead(&self) -> bool {
+		match self.peek().map(|t| &t.item) {
+			Some(Token::IntLit(_)) => self.text_at(0).chars().all(|c| c.is_ascii_digit()),
+			Some(Token::WideLit) => true,
+			_ => false,
+		}
+	}
+
+	fn starts_type_atom(&self) -> bool {
+		matches!(
+			self.peek().map(|t| &t.item),
+			Some(Token::Ident(_) | Token::LParen | Token::Underscore)
+		) || self.unsigned_literal_ahead()
+	}
+
 	fn parse_type_app(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Type>> {
 		let mut typ = self.parse_type_atom(registry)?;
 
-		while matches!(
-			self.peek().map(|t| &t.item),
-			Some(Token::Ident(_) | Token::LParen)
-		) {
+		while self.starts_type_atom() && !self.dep_binder_ahead() {
 			let arg = self.parse_type_atom(registry)?;
 			typ = Spanned {
 				span: Span::new(self.source_id, typ.span.start, arg.span.end),
@@ -1612,28 +1902,114 @@ impl Parser {
 		self.debug_print("parse type atom");
 		let tok = self.peek()?.clone();
 		let span = tok.span;
-		self.skip();
 
 		match tok.item {
-			Token::Ident(name) => Some(Spanned {
-				item: match name.as_str() {
-					"Int" => Type::Int,
-					"Float" => Type::Float,
-					"Char" => Type::Char,
-					"Unit" => Type::Unit,
-					_ => Type::Var(name),
-				},
-				span,
-			}),
+			Token::Ident(mut name) => {
+				self.skip();
+				let mut span = span;
+				// `Nat:Succ`: a qualified name, written without spaces around the colon
+				while self.next_is(&Token::Colon)
+					&& self.peek().is_some_and(|c| c.span.start == span.end)
+					&& matches!(self.peek_at(1).map(|t| &t.item), Some(Token::Ident(_)))
+					&& self
+						.peek_at(1)
+						.is_some_and(|n| n.span.start == span.end + 1)
+				{
+					self.skip();
+					let Some(Spanned {
+						item: Token::Ident(seg),
+						span: seg_span,
+					}) = self.peek().cloned()
+					else {
+						break;
+					};
+					self.skip();
+					name = format!("{}:{}", name, seg);
+					span = Span::new(self.source_id, span.start, seg_span.end);
+				}
+				Some(Spanned {
+					item: match name.as_str() {
+						"Int" => Type::Int,
+						"Float" => Type::Float,
+						"Char" => Type::Char,
+						"Unit" => Type::Unit,
+						_ => Type::Var(name),
+					},
+					span,
+				})
+			}
+			Token::Underscore => {
+				self.skip();
+				Some(Spanned {
+					item: Type::Hole,
+					span,
+				})
+			}
+			Token::IntLit(_) | Token::WideLit => {
+				let text = self.text_at(0).to_string();
+				if !text.chars().all(|c| c.is_ascii_digit()) {
+					self.skip();
+					self.error(
+						registry,
+						"type-level numbers are unsigned: remove the sign",
+						span,
+					);
+					return None;
+				}
+				self.skip();
+				match text.parse::<u64>() {
+					Ok(n) => Some(Spanned {
+						item: Type::Lit(n),
+						span,
+					}),
+					Err(_) => {
+						self.error(registry, "type-level number is too large", span);
+						None
+					}
+				}
+			}
 			Token::LParen => {
+				self.skip();
 				let inner = self.parse_type(registry)?;
 				self.eat(registry, &Token::RParen)?;
 				Some(inner)
 			}
 			_ => {
+				self.skip();
 				self.error(registry, "Expected type", span);
 				None
 			}
+		}
+	}
+
+	// `match  p1, p2 -> rhs end  ...  end` after the `=` of a type function
+	fn parse_type_match(&mut self, registry: &mut SourceRegistry) -> Option<Spanned<Type>> {
+		let start = self.eat(registry, &Token::Match)?.start;
+		let mut clauses = Vec::new();
+		while !self.next_is(&Token::End) {
+			let mut pats = vec![self.parse_type_app(registry)?];
+			while self.next_is(&Token::Comma) {
+				self.skip();
+				pats.push(self.parse_type_app(registry)?);
+			}
+			self.eat(registry, &Token::Arrow)?;
+			let rhs = self.parse_type(registry)?;
+			self.eat(registry, &Token::End)?;
+			clauses.push((pats, rhs));
+		}
+		let end = self.eat(registry, &Token::End)?.end;
+		Some(Spanned {
+			item: Type::Match(clauses),
+			span: Span::new(self.source_id, start, end),
+		})
+	}
+
+	fn kind_of_binder(c: &Constraint) -> Option<KindAst> {
+		match (&c.kind, c.class_names.as_slice()) {
+			(Some(k), _) => Some(k.clone()),
+			// `(n : Nat)`: a promoted data type, or a class if the checker finds one by that name
+			(None, [one]) => Some(KindAst::Data(one.item.clone())),
+			_ => None,
 		}
 	}
 
@@ -1643,16 +2019,34 @@ impl Parser {
 		let name = self.parse_qualified(registry)?;
 
 		let mut params = Vec::new();
-		while !self.next_is(&Token::Eq) {
-			params.push(self.parse_ident(registry)?);
+		let mut header = TypeHeader::default();
+		while !self.next_is(&Token::Eq) && !self.next_is(&Token::Colon) {
+			if self.next_is(&Token::LParen) {
+				let c = self.parse_type_param(registry)?;
+				header.param_kinds.push(Self::kind_of_binder(&c.item));
+				header.param_quantities.push(c.item.quantity);
+				params.push(c.item.type_var);
+			} else {
+				params.push(self.parse_ident(registry)?);
+				header.param_kinds.push(None);
+				header.param_quantities.push(Quantity::Omega);
+			}
+		}
+		if self.next_is(&Token::Colon) {
+			self.eat(registry, &Token::Colon)?;
+			header.result_kind = Some(self.parse_kind(registry)?);
 		}
 		self.eat(registry, &Token::Eq)?;
-		let typ = self.parse_type(registry)?;
+		let typ = if self.next_is(&Token::Match) {
+			self.parse_type_match(registry)?
+		} else {
+			self.parse_type(registry)?
+		};
 		self.eat(registry, &Token::End)?;
 
 		let end = self.peek().map(|t| t.span.end).unwrap_or(start);
 		Some(Spanned {
-			item: TopLevel::TypeDef(name, params, typ),
+			item: TopLevel::TypeDef(name, params, typ, header),
 			span: Span::new(self.source_id, start, end),
 		})
 	}

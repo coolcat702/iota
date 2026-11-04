@@ -1,7 +1,10 @@
 // type-level queries used by spec and backend
 
 use im::HashMap as ImHashMap;
-use std::collections::HashMap;
+use std::{
+	cell::RefCell,
+	collections::{HashMap, HashSet},
+};
 
 use crate::typechecker::{Scheme, Ty, TypeEnv, ty_head_name};
 
@@ -10,6 +13,7 @@ pub struct TypeInfo {
 	pub type_ctors: HashMap<String, Vec<String>>, // name, ctor names (sorted)
 	pub type_arity: ImHashMap<String, usize>,
 	pub aliases: ImHashMap<String, Ty>,
+	pub sigma_defs: ImHashMap<String, crate::typechecker::SigmaDef>,
 }
 
 /// App(App(f, a), b) -> (f, [a, b]).
@@ -22,6 +26,55 @@ pub fn spine(t: &Ty) -> (&Ty, Vec<&Ty>) {
 	}
 	args.reverse();
 	(cur, args)
+}
+
+thread_local! {
+	/// Constructors of user data types that appear in a type (`Color:Red`): promoted values,
+	/// like `True`/`False`, so they are indices and erased from layouts.
+	static PROMOTED: RefCell<HashSet<String>> =
+		RefCell::new(HashSet::new());
+}
+
+thread_local! {
+	/// `import Math:my_add as plus`: local name -> the name it stands for.
+	static ALIASES: RefCell<HashMap<String, String>> =
+		RefCell::new(HashMap::new());
+}
+
+pub fn register_alias(local: &str, target: &str) {
+	if local != target {
+		ALIASES.with(|a| {
+			a.borrow_mut().insert(local.to_string(), target.to_string());
+		});
+	}
+}
+
+pub fn alias_target(local: &str) -> Option<String> {
+	ALIASES.with(|a| a.borrow().get(local).cloned())
+}
+
+pub fn register_promoted(name: &str) {
+	PROMOTED.with(|p| {
+		p.borrow_mut().insert(name.to_string());
+	});
+}
+
+pub fn is_promoted(name: &str) -> bool {
+	PROMOTED.with(|p| p.borrow().contains(name))
+}
+
+/// A type-level number (or arithmetic on them): erased from layouts.
+pub fn is_index_ty(t: &Ty) -> bool {
+	match t {
+		Ty::Lit(_) => true,
+		Ty::App(..) => matches!(
+			spine(t).0,
+			Ty::Named(n) if matches!(n.as_str(), "Add" | "Mul" | "Sub" | "Succ" | "Ls" | "Lse") || is_promoted(n)
+		),
+		// promoted Bool values are erased indices too
+		Ty::Named(n) => matches!(n.as_str(), "True" | "False") || is_promoted(n),
+		_ => false,
+	}
 }
 
 pub fn default_vars(t: &Ty) -> Ty {
@@ -80,6 +133,7 @@ impl TypeInfo {
 			type_ctors,
 			type_arity: env.type_ctors.clone(),
 			aliases: env.type_aliases.clone(),
+			sigma_defs: env.sigma_defs.clone(),
 		}
 	}
 
